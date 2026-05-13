@@ -2,29 +2,116 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>我的手機 AR 特效</title>
-  <!-- 引入 A-Frame 與 AR.js 人臉偵測庫 -->
-  <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/gh/hiukim/mind-ar-js@1.1.4/dist/mindar-face-aframe.prod.js"></script>
+  <title>手機虛擬試衣鏡</title>
+  <!-- 引入 MediaPipe Pose 所需的 JS 庫 -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <style>
-    body { margin: 0; overflow: hidden; }
+    body { margin: 0; padding: 0; overflow: hidden; background: black; }
+    #input_video { display: none; } /* 隱藏原始相機畫面 */
+    #output_canvas { width: 100vw; height: 100vh; object-fit: cover; } /* 顯示特效後的畫面 */
   </style>
 </head>
 <body>
-  <!-- 設定人臉偵測場景 -->
-  <a-scene mindar-face embedded color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights" vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false">
-    <a-assets>
-      <!-- 這是你剛上傳的圖片，請確保檔名完全正確 -->
-      <img id="myEffect" src="effect.jpg">
-    </a-assets>
+  <video id="input_video" autoplay playsinline></video>
+  <canvas id="output_canvas"></canvas>
 
-    <a-camera active="false" position="0 0 0" look-controls="enabled: false"></a-camera>
+  <script type="module">
+    const videoElement = document.getElementById('input_video');
+    const canvasElement = document.getElementById('output_canvas');
+    const canvasCtx = canvasElement.getContext('2d');
 
-    <!-- 偵測到人臉後的特效位置 -->
-    <a-entity mindar-face-target="anchorIndex: 10"> <!-- 10 是額頭位置 -->
-      <!-- 將圖片放置在人臉上，可以調整 position, scale, rotation -->
-      <a-image src="#myEffect" position="0 0.5 0" scale="0.5 0.5 0.5"></a-image>
-    </a-entity>
-  </a-scene>
+    // 1. 載入你的衣服圖片
+    const clothImage = new Image();
+    clothImage.src = 'cloth.png'; // !!! 請確認 GitHub 上有這個 PNG 檔 !!!
+    let isImgLoaded = false;
+    clothImage.onload = () => { isImgLoaded = true; };
+
+    // 2. 處理辨識結果的函數
+    function onResults(results) {
+      if (!results.poseLandmarks) return;
+
+      // 設定 Canvas 大小與相機一致
+      canvasElement.width = videoElement.videoWidth;
+      canvasElement.height = videoElement.videoHeight;
+
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      
+      // 繪制相機原始畫面
+      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+      if (isImgLoaded) {
+        // --- 特效核心邏輯：計算衣服位置 ---
+        
+        // 取得關鍵點 (MediaPipe Pose Landmarks)
+        // 11: 左肩, 12: 右肩, 23: 左髖, 24: 右髖
+        const lm = results.poseLandmarks;
+        const leftShoulder = lm[11];
+        const rightShoulder = lm[12];
+
+        // 計算肩膀寬度 (用於決定衣服大小)
+        const shoulderWidth = Math.sqrt(
+          Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+          Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+        );
+
+        // 計算中心點 (兩肩中間，稍稍往下，靠近胸口)
+        const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+        const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + 0.1) * canvasElement.height; // +0.1 是修正量，讓衣服往下移
+
+        // 設定衣服繪製的大小 (肩膀寬度的 1.5 倍，可依圖片調整)
+        const clothWidth = shoulderWidth * 1.8;
+        const clothHeight = clothWidth * (clothImage.height / clothImage.width); // 保持圖片比例
+
+        // --- 繪製衣服 ---
+        canvasCtx.translate(centerX, centerY);
+        
+        // 計算旋轉角度 (根據肩膀傾斜度)
+        const angle = Math.atan2(
+          (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+          (leftShoulder.x - rightShoulder.x) * canvasElement.width
+        );
+        canvasCtx.rotate(angle);
+
+        // 繪製圖片 (置中)
+        canvasCtx.drawImage(
+          clothImage,
+          -clothWidth / 2, // 左右置中
+          -clothHeight * 0.1, // 上下位置修正，0.1 靠近頸部
+          clothWidth,
+          clothHeight
+        );
+      }
+      canvasCtx.restore();
+    }
+
+    // 3. 初始化 MediaPipe Pose 引擎
+    const pose = new Pose({
+      locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
+      }
+    });
+
+    pose.setOptions({
+      modelComplexity: 1, // 0: 速度快, 1: 平衡, 2: 準確但慢 (手機建議用 1)
+      smoothLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    
+    pose.onResults(onResults);
+
+    // 4. 啟動相機
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await pose.send({image: videoElement});
+      },
+      width: 1280,
+      height: 720
+    });
+    camera.start();
+
+  </script>
 </body>
 </html>
