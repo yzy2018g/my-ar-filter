@@ -3,38 +3,39 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>AI 智能試衣鏡</title>
-  
+  <title>DeepFashion AI 穿搭顧問</title>
   <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  
   <style>
     body { margin: 0; padding: 0; overflow: hidden; background-color: #000000; font-family: sans-serif; }
     .ui-layer { z-index: 999; position: absolute; }
-    /* 隱藏滾動條但保持滾動功能 */
     .scrollbar-none::-webkit-scrollbar { display: none; }
-    .scrollbar-none { -ms-overflow-style: none; scrollbar-width: none; }
   </style>
 </head>
 <body>
 
   <div id="app" class="relative w-screen h-screen select-none">
     
-    <div class="ui-layer top-4 left-4 bg-black/70 backdrop-blur-md p-3 rounded-xl text-xs text-green-400 border border-white/10 shadow-lg">
+    <div class="ui-layer top-4 left-4 right-4 bg-black/80 backdrop-blur-md p-4 rounded-xl border border-white/10 shadow-2xl transition-all">
       <div class="flex items-center space-x-2">
-        <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
-        <span class="font-mono font-bold">{{ statusMessage }}</span>
+        <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+        <span class="text-xs font-mono font-bold text-amber-400 tracking-wider">AI STYLE INSIGHT (品味分析)</span>
       </div>
-      <div class="mt-1 text-gray-400">當前款式: <span class="text-white font-semibold">{{ currentCloth.name }}</span></div>
+      <div class="mt-2">
+        <h1 class="text-lg font-bold text-white">{{ currentCloth.name }}</h1>
+        <div class="flex flex-wrap gap-1 mt-1">
+          <span v-for="tag in currentCloth.tags" class="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-semibold"># {{ tag }}</span>
+        </div>
+        <p class="mt-2 text-xs text-gray-300 leading-relaxed">{{ currentCloth.advice }}</p>
+      </div>
     </div>
 
     <video id="input_video" style="display:none;" autoplay playsinline></video>
     <canvas id="output_canvas" class="w-full h-full object-cover"></canvas>
 
-    <div class="ui-layer bottom-20 left-0 right-0 px-4">
+    <div class="ui-layer bottom-16 left-0 right-0 px-4">
       <div class="flex space-x-4 overflow-x-auto pb-4 justify-center scrollbar-none">
         
         <div 
@@ -44,10 +45,11 @@
           :class="['p-3 rounded-xl border-2 bg-black/80 backdrop-blur-md cursor-pointer transition-all duration-300 w-24 flex-shrink-0 text-center shadow-2xl', 
                    currentCloth.id === cloth.id ? 'border-amber-500 scale-105 bg-gray-900/90' : 'border-gray-700/70']"
         >
-          <div class="w-16 h-16 mx-auto bg-white/10 rounded-lg flex items-center justify-center p-1.5 shadow-inner">
+          <div class="w-16 h-16 mx-auto bg-white/5 rounded-lg flex items-center justify-center p-1 shadow-inner">
             <img :src="cloth.src" class="w-full h-full object-contain rounded">
           </div>
-          <p class="text-xs mt-2 truncate font-bold text-white tracking-wide">{{ cloth.name }}</p>
+          <p class="text-[10px] mt-2 truncate font-bold text-gray-400">風格範本</p>
+          <p class="text-xs truncate font-bold text-white">{{ cloth.styleName }}</p>
         </div>
 
       </div>
@@ -55,37 +57,61 @@
   </div>
 
   <script>
-    // 啟動 Vue 專案管理
     new Vue({
       el: '#app',
       data: {
-        statusMessage: '系統載入中...',
-        currentCloth: { id: 1, name: '原創服飾', src: 'cloth.png', scale: 1.8, offset: 0.25 },
-        // 衣服資料庫：未來可透過 JSON 檔案或爬蟲 API 擴充
+        statusMessage: '載入中...',
+        currentCloth: {},
+        // 模擬 DeepFashion 數據集結構 (包含風格標籤與專家建議)
         clothesList: [
-          { id: 1, name: '原創服飾', src: 'cloth.png', scale: 1.8, offset: 0.25 },
-          { id: 2, name: '測試服 2', src: 'cloth.png', scale: 2.2, offset: 0.15 },
-          { id: 3, name: '測試服 3', src: 'cloth.png', scale: 1.4, offset: 0.35 }
+          { 
+            id: 1, 
+            styleName: '日系工裝',
+            name: '卡其寬鬆機能風格', 
+            src: 'cloth.png', // 可以先用你原本的圖片，之後換成 DeepFashion 真人圖
+            scale: 2.0, 
+            offset: 0.22,
+            tags: ['大地色系', 'CityBoy', '機能感', '寬鬆剪裁'],
+            advice: '此風格透過高包容度的卡其色系，搭配寬鬆版型，能有效優化身材比例。建議鏡頭前的你保持自然站姿，適合微風通勤或週末街頭漫步。'
+          },
+          { 
+            id: 2, 
+            styleName: '韓系紳士',
+            name: '極簡修身西裝風格', 
+            src: 'cloth.png', 
+            scale: 1.8, 
+            offset: 0.18,
+            tags: ['沉穩黑', '大衣修身', '俐落線條', '微正式'],
+            advice: '經典的韓系俐落線條，著重於肩膀寬度的延伸（AI 已為您強化肩線）。非常適合商務半正式場合或約會，展現沉穩專業的個人品味。'
+          },
+          { 
+            id: 3, 
+            styleName: '高街高街',
+            name: '美式高街重磅衛衣', 
+            src: 'cloth.png', 
+            scale: 2.3, 
+            offset: 0.25,
+            tags: ['Oversize', '時髦街頭', '重磅視覺', 'Y2K 元素'],
+            advice: '極具分量感的 Oversize 視覺，適合打造不經意的潮流感。AI 建議搭配具有金屬質感的配飾，能大幅提升整體穿搭的精緻度。'
+          }
         ]
       },
+      created() {
+        this.currentCloth = this.clothesList[0];
+      },
       mounted() {
-        this.statusMessage = 'Vue 初始化完畢，啟動鏡頭中...';
         this.initAR();
       },
       methods: {
-        // 切換選單衣服的點擊事件
         selectCloth(cloth) {
           this.currentCloth = cloth;
-          window.clothImage.src = cloth.src; // 即時更換 Canvas 繪製的圖片源
-          this.statusMessage = '已換裝: ' + cloth.name;
+          window.clothImage.src = cloth.src;
         },
-        // 核心 AR 與 AI 辨識邏輯
         initAR() {
           const videoElement = document.getElementById('input_video');
           const canvasElement = document.getElementById('output_canvas');
           const canvasCtx = canvasElement.getContext('2d');
 
-          // 初始化衣服圖片物件
           window.clothImage = new Image();
           window.clothImage.src = this.currentCloth.src;
           let isImgLoaded = false;
@@ -93,15 +119,66 @@
 
           const self = this;
 
-          // AI 辨識每幀畫面的回傳結果
           function onResults(results) {
-            self.statusMessage = 'AI 試衣鏡運作中';
             if (!results.poseLandmarks) return;
 
-            // 讓畫布尺寸與相機輸入同步
             canvasElement.width = videoElement.videoWidth;
             canvasElement.height = videoElement.videoHeight;
-            
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (isImgLoaded) {
+              const lm = results.poseLandmarks;
+              const leftShoulder = lm[11];
+              const rightShoulder = lm[12];
+
+              const shoulderWidth = Math.sqrt(
+                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+              );
+
+              const scaleFactor = self.currentCloth.scale;
+              const offsetFactor = self.currentCloth.offset;
+
+              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
+
+              const clothWidth = shoulderWidth * scaleFactor;
+              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+
+              canvasCtx.translate(centerX, centerY);
+              const angle = Math.atan2(
+                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+                (leftShoulder.x - rightShoulder.x) * canvasElement.width
+              );
+              canvasCtx.rotate(angle);
+
+              // 💡 體驗優化：加入 85% 的透明度融合，讓真人的背景和衣服濾鏡重疊時更自然
+              canvasCtx.globalAlpha = 0.85;
+              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+              canvasCtx.globalAlpha = 1.0; // 恢復透明度
+            }
+            canvasCtx.restore();
+          }
+
+          const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+          });
+          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+          pose.onResults(onResults);
+
+          const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+          });
+          camera.start();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
             canvasCtx.save();
             canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
             
