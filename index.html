@@ -18,7 +18,7 @@
 
   <div id="app" class="relative w-screen h-screen select-none">
     
-    <div class="ui-layer top-4 left-4 right-4 bg-black/80 backdrop-blur-md p-4 rounded-xl border border-white/10 shadow-2xl transition-all">
+    <div class="ui-layer top-4 left-4 right-4 bg-black/80 backdrop-blur-md p-4 rounded-xl border border-white/10 shadow-2xl">
       <div class="flex items-center space-x-2">
         <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
         <span class="text-xs font-mono font-bold text-amber-400 tracking-wider">AI STYLE INSIGHT (品味分析)</span>
@@ -42,14 +42,13 @@
           v-for="(cloth, index) in clothesList" 
           :key="index"
           @click="selectCloth(cloth)"
-          :class="['p-3 rounded-xl border-2 bg-black/80 backdrop-blur-md cursor-pointer transition-all duration-300 w-24 flex-shrink-0 text-center shadow-2xl', 
+          :class="['p-2 rounded-xl border-2 bg-black/85 backdrop-blur-md cursor-pointer transition-all duration-300 w-28 flex-shrink-0 text-center shadow-2xl', 
                    currentCloth.id === cloth.id ? 'border-amber-500 scale-105 bg-gray-900/90' : 'border-gray-700/70']"
         >
-          <div class="w-16 h-16 mx-auto bg-white/5 rounded-lg flex items-center justify-center p-1 shadow-inner">
+          <div class="w-full h-20 mx-auto bg-white/10 rounded-lg flex items-center justify-center p-1 shadow-inner overflow-hidden">
             <img :src="cloth.src" class="w-full h-full object-contain rounded">
           </div>
-          <p class="text-[10px] mt-2 truncate font-bold text-gray-400">風格範本</p>
-          <p class="text-xs truncate font-bold text-white">{{ cloth.styleName }}</p>
+          <p class="text-[9px] mt-1.5 font-bold text-amber-400/80 tracking-widest uppercase">{{ cloth.styleName }}</p>
         </div>
 
       </div>
@@ -62,46 +61,100 @@
       data: {
         statusMessage: '載入中...',
         currentCloth: {},
-        // 模擬 DeepFashion 數據集結構 (包含風格標籤與專家建議)
-        clothesList: [
-          { 
-            id: 1, 
-            styleName: '日系工裝',
-            name: '卡其寬鬆機能風格', 
-            src: 'cloth.png', // 可以先用你原本的圖片，之後換成 DeepFashion 真人圖
-            scale: 2.0, 
-            offset: 0.22,
-            tags: ['大地色系', 'CityBoy', '機能感', '寬鬆剪裁'],
-            advice: '此風格透過高包容度的卡其色系，搭配寬鬆版型，能有效優化身材比例。建議鏡頭前的你保持自然站姿，適合微風通勤或週末街頭漫步。'
-          },
-          { 
-            id: 2, 
-            styleName: '韓系紳士',
-            name: '極簡修身西裝風格', 
-            src: 'cloth.png', 
-            scale: 1.8, 
-            offset: 0.18,
-            tags: ['沉穩黑', '大衣修身', '俐落線條', '微正式'],
-            advice: '經典的韓系俐落線條，著重於肩膀寬度的延伸（AI 已為您強化肩線）。非常適合商務半正式場合或約會，展現沉穩專業的個人品味。'
-          },
-          { 
-            id: 3, 
-            styleName: '高街高街',
-            name: '美式高街重磅衛衣', 
-            src: 'cloth.png', 
-            scale: 2.3, 
-            offset: 0.25,
-            tags: ['Oversize', '時髦街頭', '重磅視覺', 'Y2K 元素'],
-            advice: '極具分量感的 Oversize 視覺，適合打造不經意的潮流感。AI 建議搭配具有金屬質感的配飾，能大幅提升整體穿搭的精緻度。'
-          }
-        ]
-      },
-      created() {
-        this.currentCloth = this.clothesList[0];
+        clothesList: []
       },
       mounted() {
-        this.initAR();
+        // 動態讀取 json 檔案
+        fetch('clothes.json')
+          .then(response => {
+            if (!response.ok) throw new Error('找不到 clothes.json 檔案');
+            return response.json();
+          })
+          .then(data => {
+            this.clothesList = data;
+            this.currentCloth = data[0];
+            this.initAR();
+          })
+          .catch(err => {
+            console.error(err);
+          });
       },
+      methods: {
+        selectCloth(cloth) {
+          this.currentCloth = cloth;
+          window.clothImage.src = cloth.src;
+        },
+        initAR() {
+          const videoElement = document.getElementById('input_video');
+          const canvasElement = document.getElementById('output_canvas');
+          const canvasCtx = canvasElement.getContext('2d');
+
+          window.clothImage = new Image();
+          window.clothImage.src = this.currentCloth.src;
+          let isImgLoaded = false;
+          window.clothImage.onload = () => { isImgLoaded = true; };
+
+          const self = this;
+
+          function onResults(results) {
+            if (!results.poseLandmarks) return;
+
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (isImgLoaded) {
+              const lm = results.poseLandmarks;
+              const leftShoulder = lm[11];
+              const rightShoulder = lm[12];
+
+              const shoulderWidth = Math.sqrt(
+                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+              );
+
+              const scaleFactor = self.currentCloth.scale || 2.0;
+              const offsetFactor = self.currentCloth.offset || 0.2;
+
+              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
+
+              const clothWidth = shoulderWidth * scaleFactor;
+              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+
+              canvasCtx.translate(centerX, centerY);
+              const angle = Math.atan2(
+                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+                (leftShoulder.x - rightShoulder.x) * canvasElement.width
+              );
+              canvasCtx.rotate(angle);
+
+              canvasCtx.globalAlpha = 0.85;
+              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+              canvasCtx.globalAlpha = 1.0;
+            }
+            canvasCtx.restore();
+          }
+
+          const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+          });
+          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+          pose.onResults(onResults);
+
+          const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+          });
+          camera.start();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
       methods: {
         selectCloth(cloth) {
           this.currentCloth = cloth;
