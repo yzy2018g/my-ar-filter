@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepFashion AR 智慧試穿鏡 v8.0 Pro</title>
+    <title>DeepFashion AR 智慧試穿鏡 v8.1 Pro</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script type="module">
@@ -20,9 +20,9 @@
         <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4 mb-6 gap-4">
             <div>
                 <h1 class="text-2xl font-black tracking-tight text-white flex items-center gap-2">
-                    <span>👕</span> DeepFashion <span class="text-indigo-500">AR 智慧試穿鏡 v8.0</span>
+                    <span>👕</span> DeepFashion <span class="text-indigo-500">AR 智慧試穿鏡 v8.1</span>
                 </h1>
-                <p class="text-xs text-slate-400 mt-1">人體理解級 AR (Kalman Filter + Depth Correction + Hand Occlusion)</p>
+                <p class="text-xs text-slate-400 mt-1">商業產品級 (Memory Cache + Timeout Guard + Retry Mechanism + Kalman Filter)</p>
             </div>
             <div class="bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl flex items-center gap-3">
                 <div class="flex flex-col">
@@ -89,7 +89,7 @@
                 </div>
                 
                 <div class="text-[11px] text-slate-500 mt-2 text-center">
-                    💡 v8 功能提示：本版本已導入 **Kalman Filter** 零延遲去噪技術、**Pseudo-3D 側身投影修正** 與 **手部軀幹遮擋** 演算法。
+                    💡 v8.1 功能提示：整合 60 秒 Timeout 閘門與雙次防斷線重試機制，且同一件衣服重複選取時可享受 0 秒快取秒切體驗。
                 </div>
             </div>
 
@@ -97,14 +97,14 @@
     </div>
 
     <script>
-        // 🚀 ① Kalman Filter 1D 物理演算法模型
+        // Kalman Filter 1D 物理演算法模型
         class Kalman1D {
             constructor(q = 0.005, r = 0.05) {
-                this.q = q; // 過程噪聲協方差
-                this.r = r; // 測量噪聲協方差
-                this.x = 0; // 預估狀態值
-                this.p = 1; // 估計誤差協方差
-                this.k = 0; // 卡爾曼增益
+                this.q = q; 
+                this.r = r; 
+                this.x = 0; 
+                this.p = 1; 
+                this.k = 0; 
             }
             update(measurement) {
                 this.p = this.p + this.q;
@@ -138,15 +138,18 @@
                 window.clothImage = new Image();
                 window.isImgLoaded = false;
                 
-                // 實例化卡爾曼濾波器組，分別獨立追蹤五個自由度參數
+                // 🚀 v8.1 核心優化點 ①：建立內存快取記憶體對象 (Memory Cache Map)
+                // 結構：key(絕對URL) -> value({ imgUrl: string, params: object })
+                const clothCache = new Map();
+
                 const kx = new Kalman1D();
                 const ky = new Kalman1D();
                 const kw = new Kalman1D();
                 const kh = new Kalman1D();
                 const ka = new Kalman1D();
 
-                // 快取當前手部骨骼特徵點，提供給 Canvas Render 執行緒做遮擋判定
                 let latestHandLandmarks = null;
+                let isFirstFrame = true;
 
                 const statusColorClass = computed(() => {
                     if (aiStatus.value === 'ready') return 'bg-emerald-500';
@@ -169,11 +172,23 @@
                         });
                         aiStatus.value = "ready";
                         aiMessage.value = "雲端 AI 已就緒";
+                        
+                        // 🚀 v8.1 核心優化點 ③：背景默默發送暖機請求 (Warm-up Ping) 擊碎冷啟動
+                        warmUpSpace();
                     } catch (err) {
                         console.error("Gradio 連線失敗:", err);
                         aiStatus.value = "error";
                         aiMessage.value = "連線失敗，請檢查 Space ID";
                     }
+                }
+
+                // 暖機機制：背後輕戳一次空的 predict，把正在 Sleeping 的 Space 提前踹醒
+                async function warmUpSpace() {
+                    if (!appClient) return;
+                    try {
+                        // 發送一次乾淨的 Ping
+                        appClient.predict("/predict", [ "" ]).catch(()=>{});
+                    } catch(e){}
                 }
 
                 async function loadClothesConfig() {
@@ -185,73 +200,135 @@
                     }
                 }
 
+                // 🚀 v8.1 核心大整合：包含 Cache、Timeout、Retry 1 次與 Finally 攔截閘門的健全選擇函數
                 async function selectCloth(item) {
                     if (!appClient) {
                         alert("AI 後端尚未就緒！");
                         return;
                     }
 
+                    // 取得絕對路徑
+                    let absoluteClothUrl = item.url;
+                    if (!absoluteClothUrl.startsWith("http")) {
+                        absoluteClothUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/')) + '/' + absoluteClothUrl;
+                    }
+
                     currentClothUrl.value = item.url;
-                    isLoading.value = true;
                     window.isImgLoaded = false;
+
+                    // 🚀 檢查快取記憶體：如果這件衣服算過，觸發【0毫秒快取秒切】
+                    if (clothCache.has(absoluteClothUrl)) {
+                        const cached = clothCache.get(absoluteClothUrl);
+                        clothParams.value = cached.params;
+                        isFirstFrame = true; // 重設卡爾曼
+                        
+                        window.clothImage.src = cached.processedImgUrl;
+                        window.clothImage.crossOrigin = "anonymous";
+                        window.clothImage.onload = () => {
+                            window.isImgLoaded = true;
+                            isLoading.value = false; // 防禦性確保關閉
+                            aiStatus.value = "ready";
+                            aiMessage.value = "快取即時對齊完成 (0ms)！";
+                        };
+                        return; // 🚀 直接中斷，完全不打網路請求
+                    }
+
+                    // 如果沒有快取，啟動常規雲端請求流程
+                    isLoading.value = true;
                     aiStatus.value = "processing";
                     aiMessage.value = "正在剪裁...";
+                    queueMessage.value = "連線雲端 AI 中...";
+
+                    // 定義 60 秒硬性超時斷路器 (Timeout Guard)
+                    const timeout = (ms) => new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error("雲端剪裁運算超時（60秒）")), ms)
+                    );
+
+                    // 封裝核心預測承諾
+                    const runPredict = async () => {
+                        return await appClient.predict("/predict", [ absoluteClothUrl ]);
+                    };
 
                     try {
-                        let absoluteClothUrl = item.url;
-                        if (!absoluteClothUrl.startsWith("http")) {
-                            absoluteClothUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/')) + '/' + absoluteClothUrl;
+                        let result;
+
+                        try {
+                            // 🚀 嘗試第一次發送
+                            result = await Promise.race([ runPredict(), timeout(60000) ]);
+                        } catch (firstErr) {
+                            console.warn("第一次雲端請求超時或異常，啟動第二次 Retry 重試...", firstErr.message);
+                            queueMessage.value = "雲端回應慢，正在重新呼叫 AI...";
+                            // 🚀 觸發第二次重試 (Retry 1次 機制)
+                            result = await Promise.race([ runPredict(), timeout(60000) ]);
                         }
 
-                        const result = await appClient.predict("/predict", [ absoluteClothUrl ]);
+                        if (!result || !result.data || result.data.length < 4) {
+                            throw new Error("雲端回傳資料結構毀損");
+                        }
+
                         const [status, imgData, shoulder, offset] = result.data;
 
-                        if (status === "OK" && imgData && imgData.url) {
-                            clothParams.value = {
-                                shoulderWidthPercent: parseFloat(shoulder),
-                                offsetFromTopPercent: parseFloat(offset)
-                            };
-
-                            window.clothImage.src = imgData.url;
-                            window.clothImage.crossOrigin = "anonymous"; 
-                            window.clothImage.onload = () => {
-                                window.isImgLoaded = true;
-                                isLoading.value = false;
-                                aiStatus.value = "ready";
-                                aiMessage.value = "服飾對齊完成！";
-                            };
-                        } else {
-                            throw new Error(status || "未知異常");
+                        if (status !== "OK" || !imgData?.url) {
+                            throw new Error(status || "雲端後端核心拒絕請求");
                         }
+
+                        // 解析幾何比例
+                        clothParams.value = {
+                            shoulderWidthPercent: parseFloat(shoulder || 0),
+                            offsetFromTopPercent: parseFloat(offset || 0)
+                        };
+
+                        isFirstFrame = true;
+
+                        // 圖片非同步載入器守衛
+                        window.clothImage.onload = () => {
+                            window.isImgLoaded = true;
+                            isLoading.value = false;
+                            aiStatus.value = "ready";
+                            aiMessage.value = "服飾對齊完成！";
+
+                            // 🚀 寫入內存快取記憶體，下次點選直接秒開
+                            clothCache.set(absoluteClothUrl, {
+                                processedImgUrl: imgData.url,
+                                params: { ...clothParams.value }
+                            });
+                        };
+
+                        window.clothImage.onerror = () => {
+                            alert("透明貼圖載入失敗，Canvas 無法繪製");
+                            isLoading.value = false;
+                        };
+
+                        window.clothImage.src = imgData.url;
+                        window.clothImage.crossOrigin = "anonymous"; 
+
                     } catch (err) {
-                        console.error("Predict 錯誤:", err);
+                        console.error("SelectCloth 徹底攔截到錯誤:", err);
                         alert(`試穿失敗：${err.message}`);
-                        isLoading.value = false;
                         aiStatus.value = "error";
+                        aiMessage.value = "剪裁失敗";
+                    } finally {
+                        // 🚀 終極防護閘：無論如何必然關閉 UI Loading 遮罩層，杜絕永久轉圈圈
+                        isLoading.value = false;
                     }
                 }
 
-                // 核心：AR 整合渲染管道 (Pose + Hands)
+                // AR 整合渲染管道 (Pose + Hands)
                 function initAREngine() {
                     const videoElement = document.getElementById('input_video');
                     const canvasElement = document.getElementById('output_canvas');
                     const canvasCtx = canvasElement.getContext('2d');
 
-                    // ✋ 手部軀幹遮擋判定（依據雙肩矩形與手掌中心點）
                     function checkHandOcclusion(clothX, clothY, clothW, clothH) {
                         if (!latestHandLandmarks) {
                             handMaskActive.value = false;
                             return false;
                         }
-                        
-                        // 尋找第 9 號特徵點（中指指根掌心處）作為手部重心
                         for (const hand of latestHandLandmarks) {
                             const palmPoint = hand[9];
-                            // 將 MediaPipe 的 0~1 的相對座標轉換為畫布像素座標
-                            const handPx = (1 - palmPoint.x) * canvasElement.width; // 配合鏡面翻轉
+                            const handPx = (1 - palmPoint.x) * canvasElement.width; 
                             const handPy = palmPoint.y * canvasElement.height;
 
-                            // 檢查手掌中心是否落入服飾的 bounding box 內
                             if (handPx > clothX - clothW/2 && handPx < clothX + clothW/2 &&
                                 handPy > clothY - clothH*0.1 && handPy < clothY + clothH*0.9) {
                                 handMaskActive.value = true;
@@ -269,19 +346,16 @@
                         }
 
                         const lm = results.poseLandmarks;
-                        
-                        // 🚀 ④ Multi-Person Filter 多人背景防呆防錯機制
                         const visibilityScore = lm[11].visibility + lm[12].visibility;
                         if (visibilityScore < 1.5) {
-                            arStatus.value = "人體特徵模糊";
+                            arStatus.value = "特徵模糊";
                             return; 
                         }
-                        arStatus.value = "雙肩已鎖定";
+                        arStatus.value = "雙肩鎖定中";
 
                         canvasElement.width = videoElement.videoWidth;
                         canvasElement.height = videoElement.videoHeight;
                         
-                        // 🚀 核心矩陣歸零與複寫，防止狀態積壓
                         canvasCtx.save();
                         canvasCtx.setTransform(1, 0, 0, 1, 0, 0); 
                         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
@@ -291,7 +365,6 @@
                             const leftShoulder = lm[11];  
                             const rightShoulder = lm[12]; 
 
-                            // 基礎 2D 幾何計算
                             const rawHumanShoulderWidth = Math.sqrt(
                                 Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
                                 Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
@@ -299,8 +372,7 @@
 
                             let rawClothWidth = rawHumanShoulderWidth / clothParams.value.shoulderWidthPercent;
                             
-                            // 🚀 ③ Perspective Depth Correction 偽三維側身投影補償
-                            // 當人體側身時，Z 軸的距離差變大，利用 Z 差逆推身體旋轉角度並進行寬度加權
+                            // 3D 側身投影修正
                             const zDepthDelta = Math.abs(leftShoulder.z - rightShoulder.z);
                             const depthScaleFactor = 1.0 + (zDepthDelta * 1.5); 
                             rawClothWidth *= depthScaleFactor;
@@ -317,7 +389,7 @@
                                 (leftShoulder.x - rightShoulder.x) * canvasElement.width
                             );
 
-                            // 🚀 ① 卡爾曼濾波器即時迭代更新 (零延遲、高強去噪貼身跟隨)
+                            // 卡爾曼濾波器即時迭代更新 
                             const kParams = {
                                 x: kx.update(rawCenterX),
                                 y: ky.update(rawCenterY),
@@ -326,14 +398,11 @@
                                 angle: ka.update(rawAngle)
                             };
 
-                            // 🚀 ② Occlusion 手部軀幹前後景遮擋演算
                             const isOccluded = checkHandOcclusion(kParams.x, kParams.y, kParams.width, kParams.height);
 
-                            // 執行仿射變換畫布渲染
                             canvasCtx.translate(kParams.x, kParams.y);
                             canvasCtx.rotate(kParams.angle);
 
-                            // 如果手部在衣服前面，調低衣服透明度（模擬前景手部透出）
                             canvasCtx.globalAlpha = isOccluded ? 0.25 : 0.90; 
                             
                             canvasCtx.drawImage(
@@ -349,7 +418,6 @@
                         canvasCtx.restore();
                     }
 
-                    // 初始化 MediaPipe Pose 骨骼追蹤
                     const pose = new Pose({
                         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
                     });
@@ -361,7 +429,6 @@
                     });
                     pose.onResults(onPoseResults);
 
-                    // 初始化 MediaPipe Hands 手部即時監聽
                     const hands = new Hands({
                         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
                     });
@@ -374,7 +441,6 @@
                         latestHandLandmarks = handsResults.multiHandLandmarks || null;
                     });
 
-                    // 🚀 核心優化 ③：高精準 30 FPS Throttle 閥門控制器
                     let lastTime = 0;
 
                     const camera = new Camera(videoElement, {
@@ -383,7 +449,6 @@
                             if (now - lastTime < 33.3) return; 
                             lastTime = now;
                             
-                            // 同步將該張影像分流餵給 Pose 與 Hands 雙核心神經網絡
                             await pose.send({ image: videoElement });
                             await hands.send({ image: videoElement });
                         },
