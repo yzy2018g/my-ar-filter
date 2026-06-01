@@ -4,6 +4,20 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>DeepFashion 智能雲端試衣鏡</title>
+  
+  <script>
+    // 🛡️ 霸體防禦 1：強行閹割全域的列印功能，不管是誰呼叫，通通變為空函式
+    window.print = function() { console.log('已強行攔截並封鎖自動列印行為。'); };
+    
+    // 🛡️ 霸體防禦 2：封鎖鍵盤 Ctrl+P / Cmd+P 的快捷鏡像，防止手機瀏覽器誤觸
+    window.addEventListener('keydown', function(e) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'p') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+    }, true);
+  </script>
+
   <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
@@ -65,7 +79,7 @@
         aiStatus: '連線中',
         aiMessage: '等待初始化...',
         currentCloth: null,
-        // ⚠️ 請修改此處：填寫你 GitHub Pages 網頁的完整網址根路徑（記得結尾要有斜線 /）
+        // ⚠️ 請精確確認此處是否為你完整的 GitHub Pages 網址根路徑（要有 https:// 且結尾要有 /）
         githubBaseUrl: "https://yzy2018g.github.io/my-ar-filter/",
         clothesList: [
           { id: 1, styleName: "日系休閒", src: "style_1.png" },
@@ -81,27 +95,105 @@
           this.currentCloth = cloth;
           this.aiStatus = 'AI 運算中...';
           
-          // 💡 核心變革：直接組裝出這張圖片在網路上的「絕對直連網址」
           const absoluteImgUrl = this.githubBaseUrl + cloth.src;
-          this.aiMessage = `正在將圖片網址傳送給 Hugging Face 下載...`;
+          this.aiMessage = `傳送 URL 中...`;
           window.isImgLoaded = false;
 
           const hfApiUrl = "https://michaelyo-my-ar-cloth-api.hf.space/api/predict"; 
 
-          // 直接傳送網址字罩，徹底繞過所有前端 CORS 圖片破圖與污染封鎖
+          // 🚀 徹底拔除會導致手機破圖崩潰的舊 Canvas 轉換函式，直接傳送字串網址
           fetch(hfApiUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ data: [absoluteImgUrl] }) 
           })
           .then(response => {
-            if (!response.ok) throw new Error('伺服器拒絕，錯誤碼: ' + response.status);
+            if (!response.ok) throw new Error('CORS 拒連或狀態碼錯誤: ' + response.status);
             return response.json();
           })
           .then(res => {
             if (res && res.data && res.data[1]) {
               window.clothImage.src = res.data[1]; 
               window.clothParams = {
+                shoulderWidthPercent: res.data[2],
+                offsetFromTopPercent: res.data[3]
+              };
+              this.aiStatus = '就緒';
+              this.aiMessage = `AI 成功解析！衣服肩膀佔比: ${(res.data[2]*100).toFixed(1)}%`;
+            } else {
+              this.aiStatus = '失敗';
+              this.aiMessage = '雲端回傳格式不符。';
+            }
+          })
+          .catch(err => {
+            this.aiStatus = '錯誤';
+            this.aiMessage = '無法完成雲端連線。';
+            console.error("API Error:", err);
+          });
+        },
+        initAR() {
+          const videoElement = document.getElementById('input_video');
+          const canvasElement = document.getElementById('output_canvas');
+          const canvasCtx = canvasElement.getContext('2d');
+
+          function onResults(results) {
+            if (!results.poseLandmarks) return;
+
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (window.isImgLoaded && window.clothParams.shoulderWidthPercent) {
+              const lm = results.poseLandmarks;
+              const leftShoulder = lm[11];
+              const rightShoulder = lm[12];
+
+              const humanShoulderWidth = Math.sqrt(
+                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+              );
+
+              const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
+              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+
+              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+              const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
+              
+              const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
+              const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
+
+              canvasCtx.translate(centerX, centerY);
+              
+              const angle = Math.atan2(
+                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+                (leftShoulder.x - rightShoulder.x) * canvasElement.width
+              );
+              canvasCtx.rotate(angle);
+
+              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+            }
+            canvasCtx.restore();
+          }
+
+          const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+          });
+          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+          pose.onResults(onResults);
+
+          const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+          });
+          camera.start();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
                 shoulderWidthPercent: res.data[2],
                 offsetFromTopPercent: res.data[3]
               };
