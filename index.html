@@ -3,92 +3,90 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepFashion 智慧試穿間 v2.5</title>
+    <title>DeepFashion AR 動態試穿間 v3.0</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script type="module">
         import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.8.1/+esm";
         window.GradioClient = client;
     </script>
-    <style>
-        .stage-container {
-            position: relative;
-            width: 100%;
-            height: 550px;
-            background-color: #f8fafc;
-            overflow: hidden;
-            border-radius: 1rem;
-        }
-        .layer {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            pointer-events: none;
-            transition: all 0.3s ease; /* 讓衣服套上時有流暢的縮放位移效果 */
-        }
-    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 </head>
-<body class="bg-slate-50 text-slate-800 min-h-screen font-sans">
+<body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
 
-    <div class="container mx-auto px-4 py-8 max-w-6xl">
-        <header class="text-center mb-8">
-            <h1 class="text-4xl font-extrabold text-slate-900 mb-2 tracking-tight">
-                👕 DeepFashion <span class="text-indigo-600">智慧試穿間</span>
-            </h1>
-            <p class="text-slate-500 font-medium">點選衣服，雲端 AI 將自動去背、裁切並精準套用在模特兒身上</p>
+    <div id="app" class="container mx-auto px-4 py-6 max-w-7xl">
+        <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4 mb-6 gap-4">
+            <div>
+                <h1 class="text-2xl font-black tracking-tight text-white flex items-center gap-2">
+                    <span>👕</span> DeepFashion <span class="text-indigo-500">AR 智慧試穿間</span>
+                </h1>
+                <p class="text-xs text-slate-400 mt-1">結合雲端 AI 去背與本機端 MediaPipe 骨骼追蹤技術</p>
+            </div>
+            <div class="bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl flex items-center gap-3">
+                <div class="flex flex-col">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase">Hugging Face Space ID</span>
+                    <input type="text" v-model="spaceId" @change="initGradioClient"
+                           class="bg-transparent text-xs font-mono text-slate-200 focus:outline-none border-b border-transparent focus:border-indigo-500 pb-0.5 w-56">
+                </div>
+                <div class="flex items-center gap-1.5 border-l border-slate-800 pl-3">
+                    <span :class="['h-2.5 w-2.5 rounded-full animate-pulse', statusColorClass]"></span>
+                    <span class="text-xs font-medium text-slate-300 whitespace-nowrap">{{ aiStatusMessage }}</span>
+                </div>
+            </div>
         </header>
 
-        <div class="bg-white p-4 rounded-xl shadow-xs border border-slate-200 mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div class="flex-1">
-                <label class="block text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">Hugging Face Space ID</label>
-                <input type="text" id="apiUrl" class="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-sm font-mono focus:ring-2 focus:ring-indigo-500 focus:bg-white transition" 
-                       value="你的HF用戶名/你的Space名稱" placeholder="例如: username/space-name">
-            </div>
-            <div class="flex items-center space-x-2 pt-4 md:pt-0">
-                <span class="inline-flex h-3 w-3 rounded-full bg-gray-400 animate-pulse" id="statusDot"></span>
-                <span id="connectionStatus" class="text-xs font-semibold text-slate-500">等待連線...</span>
-            </div>
-        </div>
-
-        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
             
-            <div class="lg:col-span-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col">
-                <h3 class="text-lg font-bold mb-4 text-slate-800 flex items-center">
-                    <span class="mr-2">👔</span> 線上衣櫥
+            <div class="lg:col-span-3 bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col">
+                <h3 class="text-sm font-bold text-slate-400 mb-3 flex items-center gap-2">
+                    <span>👔</span> 選擇試穿服飾 ({{ clothesList.length }})
                 </h3>
                 
-                <div id="clothesList" class="grid grid-cols-2 gap-4 overflow-y-auto max-h-[500px] pr-2">
-                    <div class="text-slate-400 text-sm col-span-2 text-center py-12">正在讀取 clothes.json...</div>
+                <div class="grid grid-cols-2 lg:grid-cols-1 gap-3 overflow-y-auto max-h-[600px] pr-1">
+                    <div v-for="item in clothesList" :key="item.url"
+                         @click="selectCloth(item)"
+                         :class="['p-2 rounded-xl border transition cursor-pointer text-center bg-slate-950 flex flex-col items-center justify-between min-h-[140px]', 
+                                  currentClothUrl === item.url ? 'border-indigo-500 ring-2 ring-indigo-500/20' : 'border-slate-800 hover:border-slate-700']">
+                        <div class="h-24 w-full bg-slate-900/50 rounded-lg flex items-center justify-center p-1 overflow-hidden">
+                            <img :src="item.url" class="max-h-full max-w-full object-contain">
+                        </div>
+                        <div class="text-xs font-semibold text-slate-300 truncate w-full mt-2">{{ item.name }}</div>
+                    </div>
                 </div>
             </div>
 
-            <div class="lg:col-span-8 bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex flex-col justify-between">
-                <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between border-b border-slate-100 pb-3 mb-4 gap-2">
-                    <h3 class="text-lg font-bold text-slate-800 flex items-center">
-                        <span class="mr-2">✨</span> 試穿鏡
-                    </h3>
-                    <div class="flex items-center space-x-4 text-xs bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200">
-                        <div>肩寬比: <span id="shoulderRatio" class="font-mono font-bold text-indigo-600">0.0000</span></div>
-                        <div class="text-slate-300">|</div>
-                        <div>偏移比: <span id="offsetRatio" class="font-mono font-bold text-purple-600">0.0000</span></div>
+            <div class="lg:col-span-9 bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col justify-between">
+                <div class="flex flex-wrap items-center justify-between border-b border-slate-800 pb-3 mb-3 gap-2">
+                    <div class="flex items-center gap-2">
+                        <span class="text-xs bg-indigo-500/10 text-indigo-400 font-bold px-2.5 py-1 rounded-md border border-indigo-500/20">
+                            AR 狀態: {{ arStatus }}
+                        </span>
+                    </div>
+                    <div class="flex items-center gap-4 text-xs font-mono text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
+                        <div>肩寬佔比: <span class="text-indigo-400 font-bold">{{ (clothParams.shoulderWidthPercent * 100).toFixed(1) }}%</span></div>
+                        <div class="text-slate-700">|</div>
+                        <div>領口偏移: <span class="text-purple-400 font-bold">{{ (clothParams.offsetFromTopPercent * 100).toFixed(1) }}%</span></div>
                     </div>
                 </div>
 
-                <div class="stage-container border border-slate-200 flex items-center justify-center shadow-inner">
+                <div class="relative w-full aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center">
                     
-                    <img id="userModelImg" class="layer" src="https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?w=600&auto=format&fit=crop" alt="模特兒底圖">
+                    <video id="input_video" class="hidden" autoplay playsinline muted></video>
                     
-                    <img id="clothOverlayImg" class="layer hidden" alt="衣服疊加層">
+                    <canvas id="output_canvas" class="w-full h-full object-contain scale-x-[-1]"></canvas> 
 
-                    <div id="loadingSpinner" class="hidden absolute inset-0 bg-slate-900/40 backdrop-blur-xs flex flex-col items-center justify-center transition-all">
-                        <div class="bg-white p-6 rounded-xl shadow-xl flex flex-col items-center max-w-xs text-center">
-                            <div class="animate-spin rounded-full h-9 w-9 border-3 border-indigo-600 border-t-transparent mb-3"></div>
-                            <h4 class="text-sm font-bold text-slate-800 mb-1">AI 正在剪裁服飾</h4>
-                            <p class="text-xs text-slate-400">正在呼叫 Hugging Face 進行去背與特徵計算...</p>
+                    <div v-if="isLoading" class="absolute inset-0 bg-slate-950/80 backdrop-blur-xs flex flex-col items-center justify-center">
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-2xl flex flex-col items-center max-w-xs text-center">
+                            <div class="animate-spin rounded-full h-8 w-8 border-2 border-indigo-500 border-t-transparent mb-3"></div>
+                            <h4 class="text-sm font-bold text-slate-200 mb-1">AI 特徵計算中</h4>
+                            <p class="text-xs text-slate-500">正在傳送服飾網址至 Hugging Face Spaces 進行去背與剪裁...</p>
                         </div>
                     </div>
+                </div>
+                
+                <div class="text-[11px] text-slate-500 mt-2 text-center">
+                    💡 提示：請確保房間光線充足，並後退讓相機完整拍到你的**雙肩**，AI 衣服就會自動磁吸對齊。
                 </div>
             </div>
 
@@ -96,12 +94,218 @@
     </div>
 
     <script>
-        let gradioApp = null;
+        const { createApp, ref, computed, onMounted } = Vue;
 
-        // 頁面載入時：初始化 API 連線與讀取衣櫃資訊
-        window.onload = async function() {
-            await loadClothesConfig();
-            await initGradioClient();
+        createApp({
+            setup() {
+                // 狀態管理（已自動綁定你的 Space ID）
+                const spaceId = ref("MichaelYo/my-ar-cloth-api"); 
+                const aiStatus = ref("disconnect"); // disconnect, connecting, ready, error, processing
+                const aiMessage = ref("等待設定 Space ID");
+                const arStatus = ref("相機初始化中...");
+                const isLoading = ref(false);
+                
+                const clothesList = ref([]);
+                const currentClothUrl = ref("");
+                
+                // 全域變數掛載，避免 MediaPipe 渲染執行緒衝突
+                window.clothImage = new Image();
+                window.isImgLoaded = false;
+                window.clothParams = {
+                    shoulderWidthPercent: 0.0,
+                    offsetFromTopPercent: 0.0
+                };
+
+                // 控制指示燈顏色
+                const statusColorClass = computed(() => {
+                    if (aiStatus.value === 'ready') return 'bg-emerald-500';
+                    if (aiStatus.value === 'connecting' || aiStatus.value === 'processing') return 'bg-amber-400';
+                    if (aiStatus.value === 'error') return 'bg-rose-500';
+                    return 'bg-slate-600';
+                });
+
+                const aiStatusMessage = computed(() => {
+                    if (aiStatus.value === 'ready') return '雲端 AI 已就緒';
+                    return aiMessage.value;
+                });
+
+                // 1. 初始化 Gradio Client 連線
+                let gradioApp = null;
+                async function initGradioClient() {
+                    if (!spaceId.value.trim()) return;
+                    try {
+                        aiStatus.value = "connecting";
+                        aiMessage.value = "正在連線至 HF Space...";
+                        gradioApp = await window.GradioClient(spaceId.value.trim());
+                        aiStatus.value = "ready";
+                    } catch (err) {
+                        console.error(err);
+                        aiStatus.value = "error";
+                        aiMessage.value = "連線失敗，請檢查 Space ID";
+                    }
+                }
+
+                // 2. 讀取衣櫥設定檔
+                async function loadClothesConfig() {
+                    try {
+                        const res = await fetch('clothes.json');
+                        clothesList.value = await res.json();
+                    } catch (err) {
+                        console.error("無法讀取 clothes.json:", err);
+                    }
+                }
+
+                // 3. 點選衣服：發送 API 請求
+                async function selectCloth(item) {
+                    if (!gradioApp) {
+                        alert("AI 伺服器尚未連線成功！");
+                        return;
+                    }
+                    
+                    currentClothUrl.value = item.url;
+                    isLoading.value = true;
+                    aiStatus.value = "processing";
+                    aiMessage.value = "AI 剪裁中...";
+                    window.isImgLoaded = false;
+
+                    try {
+                        const res = await gradioApp.predict("/predict", [ item.url ]);
+                        const [status, imgData, shoulder, offset] = res.data;
+
+                        if (status === "OK" && imgData && imgData.url) {
+                            window.clothParams = {
+                                shoulderWidthPercent: parseFloat(shoulder),
+                                offsetFromTopPercent: parseFloat(offset)
+                            };
+
+                            window.clothImage.src = imgData.url;
+                            window.clothImage.onload = () => {
+                                window.isImgLoaded = true;
+                                isLoading.value = false;
+                                aiStatus.value = "ready";
+                            };
+                        } else {
+                            alert("雲端處理異常: " + status);
+                            isLoading.value = false;
+                            aiStatus.value = "error";
+                        }
+                    } catch (err) {
+                        console.error(err);
+                        alert("呼叫雲端 API 失敗，請確認你的 Space 是否在運行中。");
+                        isLoading.value = false;
+                        aiStatus.value = "error";
+                    }
+                }
+
+                // 4. 初始化 MediaPipe AR 引擎
+                function initAREngine() {
+                    const videoElement = document.getElementById('input_video');
+                    const canvasElement = document.getElementById('output_canvas');
+                    const canvasCtx = canvasElement.getContext('2d');
+
+                    function onResults(results) {
+                        if (!results.poseLandmarks) {
+                            arStatus.value = "未偵測到人體";
+                            return;
+                        }
+                        arStatus.value = "追蹤中";
+
+                        canvasElement.width = videoElement.videoWidth;
+                        canvasElement.height = videoElement.videoHeight;
+                        
+                        canvasCtx.save();
+                        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+                        // 🚀 全自動骨骼磁吸對齊演算法
+                        if (window.isImgLoaded && window.clothParams.shoulderWidthPercent > 0) {
+                            const lm = results.poseLandmarks;
+                            const leftShoulder = lm[11];  
+                            const rightShoulder = lm[12]; 
+
+                            // 計算畫面上雙肩的實際像素寬度
+                            const humanShoulderWidth = Math.sqrt(
+                                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+                                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+                            );
+
+                            // 根據衣服肩膀佔比逆推圖層寬高
+                            const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
+                            const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+
+                            // 定位點計算
+                            const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+                            const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
+
+                            const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
+                            const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
+
+                            // 畫布位移與旋轉對齊
+                            canvasCtx.translate(centerX, centerY);
+                            const angle = Math.atan2(
+                                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+                                (leftShoulder.x - rightShoulder.x) * canvasElement.width
+                            );
+                            canvasCtx.rotate(angle);
+
+                            // 融合衣服透明圖層
+                            canvasCtx.globalAlpha = 0.85;
+                            canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+                            canvasCtx.globalAlpha = 1.0;
+                        }
+
+                        canvasCtx.restore();
+                    }
+
+                    const pose = new Pose({
+                        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+                    });
+
+                    pose.setOptions({
+                        modelComplexity: 0, 
+                        smoothLandmarks: true,
+                        minDetectionConfidence: 0.5,
+                        minTrackingConfidence: 0.5
+                    });
+                    pose.onResults(onResults);
+
+                    const camera = new Camera(videoElement, {
+                        onFrame: async () => {
+                            await pose.send({ image: videoElement });
+                        },
+                        width: 1280,
+                        height: 720
+                    });
+
+                    camera.start()
+                        .then(() => { arStatus.value = "鏡頭就緒"; })
+                        .catch(err => { arStatus.value = "鏡頭啟動失敗: " + err; });
+                }
+
+                // 進入頁面自動初始化
+                onMounted(async () => {
+                    await loadClothesConfig();
+                    await initGradioClient();
+                    initAREngine();
+                });
+
+                return {
+                    spaceId,
+                    aiStatusMessage,
+                    statusColorClass,
+                    arStatus,
+                    isLoading,
+                    clothesList,
+                    currentClothUrl,
+                    clothParams: window.clothParams,
+                    initGradioClient,
+                    selectCloth
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
         };
 
         // 1. 自動初始化 Gradio Client
