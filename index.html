@@ -1,108 +1,198 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>DeepFashion 智能雲端試衣鏡</title>
-  <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <style>
-    body { margin: 0; padding: 0; overflow: hidden; background-color: #000000; font-family: sans-serif; }
-    .ui-layer { z-index: 999; position: absolute; }
-    .scrollbar-none::-webkit-scrollbar { display: none; }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>DeepFashion AR Stable</title>
+
+<script>
+/* =========================
+   🔥 ANTI PRINT CORE
+========================= */
+(function () {
+  console.log("[ANTI-PRINT] enabled");
+
+  const noop = () => {
+    console.warn("[ANTI-PRINT] blocked print()");
+  };
+
+  // lock window.print
+  Object.defineProperty(window, "print", {
+    value: noop,
+    writable: false,
+    configurable: false
+  });
+
+  // block Ctrl+P
+  document.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return false;
+    }
+  }, true);
+
+  // block print events
+  window.addEventListener("beforeprint", e => {
+    e.preventDefault?.();
+    console.warn("[ANTI-PRINT] beforeprint blocked");
+  });
+
+  // detect injection override
+  setInterval(() => {
+    if (window.print !== noop) {
+      console.warn("[ANTI-PRINT] print overridden → restoring");
+      window.print = noop;
+    }
+  }, 1000);
+
+})();
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<style>
+body { margin:0; overflow:hidden; background:#000; }
+canvas { width:100%; height:100%; }
+.ui { position:absolute; z-index:10; color:white; }
+</style>
 </head>
+
 <body>
 
-  <div id="app" class="relative w-screen h-screen select-none">
-    
-    <div v-if="currentCloth" class="ui-layer top-4 left-4 right-4 bg-black/80 backdrop-blur-md p-4 rounded-xl border border-white/10 shadow-2xl">
-      <div class="flex items-center space-x-2">
-        <span :class="['w-2 h-2 rounded-full animate-pulse transition-colors duration-300', aiStatus === '就緒' ? 'bg-green-500' : (aiStatus === 'AI 運算中...' ? 'bg-red-500' : 'bg-gray-500')]"></span>
-        <span class="text-xs font-mono font-bold text-amber-400 tracking-wider">AI CLOUD ENGINE ➔ {{ aiStatus }}</span>
-      </div>
-      <div class="mt-2">
-        <h1 class="text-lg font-bold text-white">{{ currentCloth.styleName }}</h1>
-        <p class="mt-1 text-xs text-gray-400">目前狀態：{{ aiMessage }}</p>
-      </div>
-    </div>
+<div id="app">
 
-    <video id="input_video" style="display:none;" autoplay playsinline></video>
-    <canvas id="output_canvas" class="w-full h-full object-cover"></canvas>
-
-    <div class="ui-layer bottom-16 left-0 right-0 px-4">
-      <div class="flex space-x-4 overflow-x-auto pb-4 justify-center scrollbar-none">
-        
-        <div 
-          v-for="(cloth, index) in clothesList" 
-          :key="index"
-          @click="selectAndProcessCloth(cloth)"
-          :class="['p-2 rounded-xl border-2 bg-black/85 backdrop-blur-md cursor-pointer transition-all duration-300 w-28 flex-shrink-0 text-center shadow-2xl', 
-                   currentCloth.id === cloth.id ? 'border-amber-500 scale-105 bg-gray-900/90' : 'border-gray-700/70']"
-        >
-          <div class="w-full h-20 mx-auto bg-white/5 rounded-lg flex items-center justify-center p-1 shadow-inner overflow-hidden">
-            <img :src="cloth.src" class="w-full h-full object-contain rounded">
-          </div>
-          <p class="text-[9px] mt-1.5 font-bold text-amber-400/80 tracking-widest uppercase">{{ cloth.styleName }}</p>
-        </div>
-
-      </div>
-    </div>
+  <div class="ui" style="top:10px;left:10px">
+    <div>{{ status }}</div>
+    <div>{{ message }}</div>
   </div>
 
-  <script>
-    // 全域變數，供 MediaPipe 繪圖隨時調用 (避免非同步衝突)
-    window.clothImage = new Image();
-    window.isImgLoaded = false;
-    // 初始化衣服的自動對齊參數
-    window.clothParams = { shoulderWidthPercent: 0.65, offsetFromTopPercent: 0.12 };
+  <video id="video" autoplay playsinline style="display:none;"></video>
+  <canvas id="canvas"></canvas>
 
-    window.clothImage.onload = () => { window.isImgLoaded = true; };
+</div>
 
-    new Vue({
-      el: '#app',
-      data: {
-        aiStatus: '連線中',
-        aiMessage: '請選擇下方風格啟動雲端解析...',
-        currentCloth: null,
-        clothesList: [
-          // 這裡存放 GitHub 上的原始圖片
-          { id: 1, styleName: "日系休閒", src: "style_1.png" },
-          { id: 2, styleName: "韓系大衣", src: "style_2.png" }
-        ]
-      },
-      mounted() {
-        // 預設直接觸發第一件衣服的雲端解析
-        this.selectAndProcessCloth(this.clothesList[0]);
-        this.initAR();
-      },
-      methods: {
-        // 🚀 終極商用邏輯：點擊按鈕，動態發送 GitHub 圖片網址給雲端 AI 解析
-        selectAndProcessCloth(cloth) {
-          this.currentCloth = cloth;
-          this.aiStatus = 'AI 運算中...';
-          this.aiMessage = `正在將 ${cloth.styleName} 模特兒原圖送往 Hugging Face 進行「自動去頭、去皮膚、算特徵點」...`;
-          window.isImgLoaded = false; // 處理時暫時把衣服藏起來
+<script>
+new Vue({
+  el: "#app",
+  data: {
+    status: "init",
+    message: "loading...",
+    clothImage: new Image(),
+    clothLoaded: false,
+    clothUrl: "https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png"
+  },
 
-          // 💡 1. 我們利用特工函式把 GitHub 圖片轉成 Base64，以呼叫 API
-          this.getImgBase64FromUrl(cloth.src, (base64Data) => {
-            
-            // 💡 2. 發送請求給你的 Hugging Face API
-            // ⚠️ 請精確替換下面的網址為你的 HF Space 網址 + "/api/predict"
-            const hfApiUrl = "https://你的帳號-你的專案名.hf.space/api/predict"; 
+  mounted() {
+    this.initImage();
+    this.initAR();
+  },
 
-            fetch(hfApiUrl, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ data: [base64Data] }) // 將圖片送入
-            })
-            .then(response => response.json())
-            .then(res => {
-              if (res.data && res.data[1]) {
-                // 💡 3. 🎉 AI 解析完成！前端 Vue 收到純衣服透明圖與自動計算好的肩膀參數
-                window.clothImage.src = res.data[1]; 
+  methods: {
+
+    /* =========================
+       SAFE IMAGE LOADER
+    ========================= */
+    initImage() {
+      this.clothImage.crossOrigin = "anonymous";
+
+      this.clothImage.onload = () => {
+        this.clothLoaded = true;
+        this.status = "ready";
+      };
+
+      this.clothImage.onerror = () => {
+        this.status = "error";
+        this.message = "image load failed";
+      };
+
+      this.clothImage.src = this.clothUrl;
+    },
+
+    /* =========================
+       AR ENGINE
+    ========================= */
+    initAR() {
+      const video = document.getElementById("video");
+      const canvas = document.getElementById("canvas");
+      const ctx = canvas.getContext("2d");
+
+      const pose = new Pose({
+        locateFile: f =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
+      });
+
+      pose.setOptions({
+        modelComplexity: 1,
+        smoothLandmarks: true,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+      });
+
+      pose.onResults(results => {
+        if (!results.poseLandmarks) return;
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        // 🔥 important reset (avoid transform bug)
+        ctx.setTransform(1,0,0,1,0,0);
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+
+        ctx.drawImage(results.image,0,0,canvas.width,canvas.height);
+
+        if (!this.clothLoaded) return;
+
+        const lm = results.poseLandmarks;
+        const L = lm[11], R = lm[12];
+
+        const dx = (L.x - R.x) * canvas.width;
+        const dy = (L.y - R.y) * canvas.height;
+
+        const dist = Math.sqrt(dx*dx + dy*dy);
+
+        const w = dist * 2.0;
+        const h = w * (this.clothImage.height / this.clothImage.width);
+
+        const cx = ((L.x + R.x)/2) * canvas.width;
+        const cy = ((L.y + R.y)/2) * canvas.height;
+
+        const angle = Math.atan2(dy, dx);
+
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate(angle);
+
+        ctx.globalAlpha = 0.85;
+        ctx.drawImage(this.clothImage, -w/2, -h*0.1, w, h);
+        ctx.globalAlpha = 1;
+
+        ctx.restore();
+      });
+
+      const camera = new Camera(video, {
+        onFrame: async () => {
+          await pose.send({ image: video });
+        },
+        width: 1280,
+        height: 720
+      });
+
+      camera.start().then(() => {
+        this.status = "camera ready";
+      }).catch(err => {
+        this.status = "camera error";
+        this.message = err.toString();
+      });
+    }
+  }
+});
+</script>
+
+</body>
+</html>                window.clothImage.src = res.data[1]; 
                 window.clothParams = {
                   shoulderWidthPercent: res.data[2],
                   offsetFromTopPercent: res.data[3]
