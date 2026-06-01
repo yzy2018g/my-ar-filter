@@ -2,106 +2,197 @@
 <html>
 <head>
   <meta charset="utf-8">
-  <title>手機虛擬試衣鏡</title>
-  <!-- 引入 MediaPipe Pose 所需的 JS 庫 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>DeepFashion 智能雲端試衣鏡</title>
+  <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
   <style>
-    body { margin: 0; padding: 0; overflow: hidden; background: black; }
-    #input_video { display: none; } /* 隱藏原始相機畫面 */
-    #output_canvas { width: 100vw; height: 100vh; object-fit: cover; } /* 顯示特效後的畫面 */
+    body { margin: 0; padding: 0; overflow: hidden; background-color: #000000; font-family: sans-serif; }
+    .ui-layer { z-index: 999; position: absolute; }
+    .scrollbar-none::-webkit-scrollbar { display: none; }
   </style>
 </head>
 <body>
-  <video id="input_video" autoplay playsinline></video>
-  <canvas id="output_canvas"></canvas>
 
-  <script type="module">
-    const videoElement = document.getElementById('input_video');
-    const canvasElement = document.getElementById('output_canvas');
-    const canvasCtx = canvasElement.getContext('2d');
-
-    // 1. 載入你的衣服圖片
-    const clothImage = new Image();
-    clothImage.src = 'cloth.png'; // !!! 請確認 GitHub 上有這個 PNG 檔 !!!
-    let isImgLoaded = false;
-    clothImage.onload = () => { isImgLoaded = true; };
-
-    // 2. 處理辨識結果的函數
-    function onResults(results) {
-      if (!results.poseLandmarks) return;
-
-      // 設定 Canvas 大小與相機一致
-      canvasElement.width = videoElement.videoWidth;
-      canvasElement.height = videoElement.videoHeight;
-
-      canvasCtx.save();
-      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      
-      // 繪制相機原始畫面
-      canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-      if (isImgLoaded) {
-        // --- 特效核心邏輯：計算衣服位置 ---
-        
-        // 取得關鍵點 (MediaPipe Pose Landmarks)
-        // 11: 左肩, 12: 右肩, 23: 左髖, 24: 右髖
-        const lm = results.poseLandmarks;
-        const leftShoulder = lm[11];
-        const rightShoulder = lm[12];
-
-        // 計算肩膀寬度 (用於決定衣服大小)
-        const shoulderWidth = Math.sqrt(
-          Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-          Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-        );
-
-        // 計算中心點 (兩肩中間，稍稍往下，靠近胸口)
-        const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-        const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + 0.1) * canvasElement.height; // +0.1 是修正量，讓衣服往下移
-
-        // 設定衣服繪製的大小 (肩膀寬度的 1.5 倍，可依圖片調整)
-        const clothWidth = shoulderWidth * 1.8;
-        const clothHeight = clothWidth * (clothImage.height / clothImage.width); // 保持圖片比例
-
-        // --- 繪製衣服 ---
-        canvasCtx.translate(centerX, centerY);
-        
-        // 計算旋轉角度 (根據肩膀傾斜度)
-        const angle = Math.atan2(
-          (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-          (leftShoulder.x - rightShoulder.x) * canvasElement.width
-        );
-        canvasCtx.rotate(angle);
-
-        // 繪製圖片 (置中)
-        canvasCtx.drawImage(
-          clothImage,
-          -clothWidth / 2, // 左右置中
-          -clothHeight * 0.1, // 上下位置修正，0.1 靠近頸部
-          clothWidth,
-          clothHeight
-        );
-      }
-      canvasCtx.restore();
-    }
-
-    // 3. 初始化 MediaPipe Pose 引擎
-    const pose = new Pose({
-      locateFile: (file) => {
-        return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`;
-      }
-    });
-
-    pose.setOptions({
-      modelComplexity: 1, // 0: 速度快, 1: 平衡, 2: 準確但慢 (手機建議用 1)
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
-    });
+  <div id="app" class="relative w-screen h-screen select-none">
     
-    pose.onResults(onResults);
+    <div v-if="currentCloth" class="ui-layer top-4 left-4 right-4 bg-black/80 backdrop-blur-md p-4 rounded-xl border border-white/10 shadow-2xl">
+      <div class="flex items-center space-x-2">
+        <span :class="['w-2 h-2 rounded-full animate-pulse transition-colors duration-300', aiStatus === '就緒' ? 'bg-green-500' : (aiStatus === 'AI 運算中...' ? 'bg-red-500' : 'bg-gray-500')]"></span>
+        <span class="text-xs font-mono font-bold text-amber-400 tracking-wider">AI CLOUD ENGINE ➔ {{ aiStatus }}</span>
+      </div>
+      <div class="mt-2">
+        <h1 class="text-lg font-bold text-white">{{ currentCloth.styleName }}</h1>
+        <p class="mt-1 text-xs text-gray-400">目前狀態：{{ aiMessage }}</p>
+      </div>
+    </div>
 
+    <video id="input_video" style="display:none;" autoplay playsinline></video>
+    <canvas id="output_canvas" class="w-full h-full object-cover"></canvas>
+
+    <div class="ui-layer bottom-16 left-0 right-0 px-4">
+      <div class="flex space-x-4 overflow-x-auto pb-4 justify-center scrollbar-none">
+        
+        <div 
+          v-for="(cloth, index) in clothesList" 
+          :key="index"
+          @click="selectAndProcessCloth(cloth)"
+          :class="['p-2 rounded-xl border-2 bg-black/85 backdrop-blur-md cursor-pointer transition-all duration-300 w-28 flex-shrink-0 text-center shadow-2xl', 
+                   currentCloth.id === cloth.id ? 'border-amber-500 scale-105 bg-gray-900/90' : 'border-gray-700/70']"
+        >
+          <div class="w-full h-20 mx-auto bg-white/5 rounded-lg flex items-center justify-center p-1 shadow-inner overflow-hidden">
+            <img :src="cloth.src" class="w-full h-full object-contain rounded">
+          </div>
+          <p class="text-[9px] mt-1.5 font-bold text-amber-400/80 tracking-widest uppercase">{{ cloth.styleName }}</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.clothImage = new Image();
+    window.isImgLoaded = false;
+    window.clothParams = { shoulderWidthPercent: 0.65, offsetFromTopPercent: 0.12 };
+
+    window.clothImage.onload = () => { window.isImgLoaded = true; };
+
+    new Vue({
+      el: '#app',
+      data: {
+        aiStatus: '連線中',
+        aiMessage: '請選擇下方風格啟動雲端解析...',
+        currentCloth: null,
+        clothesList: [
+          { id: 1, styleName: "日系休閒", src: "style_1.png" },
+          { id: 2, styleName: "韓系大衣", src: "style_2.png" }
+        ]
+      },
+      mounted() {
+        this.selectAndProcessCloth(this.clothesList[0]);
+        this.initAR();
+      },
+      methods: {
+        selectAndProcessCloth(cloth) {
+          this.currentCloth = cloth;
+          this.aiStatus = 'AI 運算中...';
+          this.aiMessage = `正在將 ${cloth.styleName} 原始圖片送往 Hugging Face 進行雲端 AI 去頭、去皮膚、特徵點計算...`;
+          window.isImgLoaded = false;
+
+          this.getImgBase64FromUrl(cloth.src, (base64Data) => {
+            
+            // ⚠️ 請在此處精確填寫你的 Hugging Face API 網址
+            const hfApiUrl = "https://你的帳號-你的專案名.hf.space/api/predict"; 
+
+            // 修正後的符合 Gradio API 規範的標準呼叫格式
+            fetch(hfApiUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ data: [base64Data] })
+            })
+            .then(response => {
+              if (!response.ok) throw new Error('網路回應不正常');
+              return response.json();
+            })
+            .then(res => {
+              if (res.data && res.data[1]) {
+                window.clothImage.src = res.data[1]; 
+                window.clothParams = {
+                  shoulderWidthPercent: res.data[2],
+                  offsetFromTopPercent: res.data[3]
+                };
+                this.aiStatus = '就緒';
+                this.aiMessage = `AI 成功切除頭部與膚色！肩膀佔比: ${(res.data[2]*100).toFixed(1)}%, 領口偏移: ${(res.data[3]*100).toFixed(1)}%`;
+              } else {
+                this.aiStatus = '失敗';
+                this.aiMessage = '雲端 API 回傳錯誤。';
+              }
+            })
+            .catch(err => {
+              this.aiStatus = '錯誤';
+              this.aiMessage = '無法連線到 Hugging Face，請確認 API 網址正確且處於 Running 狀態。';
+              console.error(err); // 修正點：改用 console.error，阻止跳出列印視窗
+            });
+          });
+        },
+        getImgBase64FromUrl(url, callback) {
+          const img = new Image();
+          img.crossOrigin = 'Anonymous';
+          img.src = url + '?t=' + new Date().getTime();
+          img.onload = function() {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            callback(canvas.toDataURL('image/png'));
+          };
+        },
+        initAR() {
+          const videoElement = document.getElementById('input_video');
+          const canvasElement = document.getElementById('output_canvas');
+          const canvasCtx = canvasElement.getContext('2d');
+
+          function onResults(results) {
+            if (!results.poseLandmarks) return;
+
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (window.isImgLoaded && window.clothParams.shoulderWidthPercent) {
+              const lm = results.poseLandmarks;
+              const leftShoulder = lm[11];
+              const rightShoulder = lm[12];
+
+              const humanShoulderWidth = Math.sqrt(
+                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+              );
+
+              const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
+              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+
+              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+              const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
+              
+              const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
+              const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
+
+              canvasCtx.translate(centerX, centerY);
+              
+              const angle = Math.atan2(
+                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+                (leftShoulder.x - rightShoulder.x) * canvasElement.width
+              );
+              canvasCtx.rotate(angle);
+
+              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+            }
+            canvasCtx.restore();
+          }
+
+          const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+          });
+          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+          pose.onResults(onResults);
+
+          const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+          });
+          camera.start();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
     // 4. 啟動相機
     const camera = new Camera(videoElement, {
       onFrame: async () => {
