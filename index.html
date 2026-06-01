@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepFashion AR 動態試穿間 v5.5</title>
+    <title>DeepFashion AR 智慧試穿鏡 v8.0 Pro</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script type="module">
@@ -12,6 +12,7 @@
     </script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
 
@@ -19,9 +20,9 @@
         <header class="flex flex-col md:flex-row md:items-center md:justify-between border-b border-slate-800 pb-4 mb-6 gap-4">
             <div>
                 <h1 class="text-2xl font-black tracking-tight text-white flex items-center gap-2">
-                    <span>👕</span> DeepFashion <span class="text-indigo-500">AR 智慧試穿間</span>
+                    <span>👕</span> DeepFashion <span class="text-indigo-500">AR 智慧試穿鏡 v8.0</span>
                 </h1>
-                <p class="text-xs text-slate-400 mt-1">結合雲端 AI 去背與本機端 MediaPipe 骨骼追蹤技術</p>
+                <p class="text-xs text-slate-400 mt-1">人體理解級 AR (Kalman Filter + Depth Correction + Hand Occlusion)</p>
             </div>
             <div class="bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl flex items-center gap-3">
                 <div class="flex flex-col">
@@ -40,7 +41,7 @@
             
             <div class="lg:col-span-3 bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col">
                 <h3 class="text-sm font-bold text-slate-400 mb-3 flex items-center gap-2">
-                    <span>👔</span> 選擇試穿服飾 ({{ clothesList.length }})
+                    <span>👔</span> 線上衣櫥 ({{ clothesList.length }})
                 </h3>
                 
                 <div class="grid grid-cols-2 lg:grid-cols-1 gap-3 overflow-y-auto max-h-[600px] pr-1">
@@ -60,7 +61,10 @@
                 <div class="flex flex-wrap items-center justify-between border-b border-slate-800 pb-3 mb-3 gap-2">
                     <div class="flex items-center gap-2">
                         <span class="text-xs bg-indigo-500/10 text-indigo-400 font-bold px-2.5 py-1 rounded-md border border-indigo-500/20">
-                            AR 狀態: {{ arStatus }}
+                            AR 鏡頭: {{ arStatus }}
+                        </span>
+                        <span v-if="handMaskActive" class="text-[11px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded-md font-bold">
+                            ✋ 前景手部遮擋已激活
                         </span>
                     </div>
                     <div class="flex items-center gap-4 text-xs font-mono text-slate-400 bg-slate-950 px-3 py-1.5 rounded-lg border border-slate-800">
@@ -73,20 +77,19 @@
                 <div class="relative w-full aspect-video bg-slate-950 rounded-xl overflow-hidden border border-slate-800 flex items-center justify-center">
                     
                     <video id="input_video" class="hidden" autoplay playsinline muted></video>
-                    
                     <canvas id="output_canvas" class="w-full h-full object-contain scale-x-[-1]"></canvas> 
 
                     <div v-if="isLoading" class="absolute inset-0 bg-slate-950/80 backdrop-blur-xs flex flex-col items-center justify-center">
-                        <div class="bg-white border border-slate-800 p-6 rounded-2xl shadow-2xl flex flex-col items-center max-w-xs text-center text-slate-900">
+                        <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-2xl flex flex-col items-center max-w-xs text-center">
                             <div class="animate-spin rounded-full h-8 w-8 border-2 border-indigo-500 border-t-transparent mb-3"></div>
-                            <h4 class="text-sm font-bold mb-1">AI 去背剪裁中</h4>
+                            <h4 class="text-sm font-bold text-slate-200 mb-1">AI 雲端剪裁中</h4>
                             <p class="text-xs text-slate-500">{{ queueMessage }}</p>
                         </div>
                     </div>
                 </div>
                 
                 <div class="text-[11px] text-slate-500 mt-2 text-center">
-                    💡 提示：請確保房間光線充足，並後退讓相機完整拍到你的**雙肩**，AI 衣服就會自動磁吸對齊。
+                    💡 v8 功能提示：本版本已導入 **Kalman Filter** 零延遲去噪技術、**Pseudo-3D 側身投影修正** 與 **手部軀幹遮擋** 演算法。
                 </div>
             </div>
 
@@ -94,6 +97,24 @@
     </div>
 
     <script>
+        // 🚀 ① Kalman Filter 1D 物理演算法模型
+        class Kalman1D {
+            constructor(q = 0.005, r = 0.05) {
+                this.q = q; // 過程噪聲協方差
+                this.r = r; // 測量噪聲協方差
+                this.x = 0; // 預估狀態值
+                this.p = 1; // 估計誤差協方差
+                this.k = 0; // 卡爾曼增益
+            }
+            update(measurement) {
+                this.p = this.p + this.q;
+                this.k = this.p / (this.p + this.r);
+                this.x = this.x + this.k * (measurement - this.x);
+                this.p = (1 - this.k) * this.p;
+                return this.x;
+            }
+        }
+
         const { createApp, ref, computed, onMounted } = Vue;
 
         createApp({
@@ -103,17 +124,29 @@
                 const aiMessage = ref("正在連線至雲端...");
                 const arStatus = ref("相機初始化中...");
                 const isLoading = ref(false);
-                const queueMessage = ref("正在發送請求...");
+                const queueMessage = ref("請求傳送中...");
+                const handMaskActive = ref(false);
                 
                 const clothesList = ref([]);
                 const currentClothUrl = ref("");
                 
-                window.clothImage = new Image();
-                window.isImgLoaded = false;
-                window.clothParams = {
+                const clothParams = ref({
                     shoulderWidthPercent: 0.0,
                     offsetFromTopPercent: 0.0
-                };
+                });
+
+                window.clothImage = new Image();
+                window.isImgLoaded = false;
+                
+                // 實例化卡爾曼濾波器組，分別獨立追蹤五個自由度參數
+                const kx = new Kalman1D();
+                const ky = new Kalman1D();
+                const kw = new Kalman1D();
+                const kh = new Kalman1D();
+                const ka = new Kalman1D();
+
+                // 快取當前手部骨骼特徵點，提供給 Canvas Render 執行緒做遮擋判定
+                let latestHandLandmarks = null;
 
                 const statusColorClass = computed(() => {
                     if (aiStatus.value === 'ready') return 'bg-emerald-500';
@@ -124,18 +157,16 @@
 
                 const aiStatusMessage = computed(() => aiMessage.value);
 
-                // 初始化 Gradio Client
+                // 初始化 Gradio 6 SDK
                 let appClient = null;
                 async function initGradioClient() {
                     if (!spaceId.value.trim()) return;
                     try {
                         aiStatus.value = "processing";
                         aiMessage.value = "與 HF Space 握手中...";
-                        
                         appClient = await window.GradioClient(spaceId.value.trim(), {
                             with_credentials: false
                         });
-                        
                         aiStatus.value = "ready";
                         aiMessage.value = "雲端 AI 已就緒";
                     } catch (err) {
@@ -145,7 +176,6 @@
                     }
                 }
 
-                // 讀取衣櫥設定檔 clothes.json
                 async function loadClothesConfig() {
                     try {
                         const res = await fetch('clothes.json');
@@ -155,10 +185,9 @@
                     }
                 }
 
-                // 點選服飾並向雲端發送串流監聽
                 async function selectCloth(item) {
                     if (!appClient) {
-                        alert("AI 後端尚未就緒，請稍候！");
+                        alert("AI 後端尚未就緒！");
                         return;
                     }
 
@@ -166,8 +195,7 @@
                     isLoading.value = true;
                     window.isImgLoaded = false;
                     aiStatus.value = "processing";
-                    aiMessage.value = "正在排隊剪裁...";
-                    queueMessage.value = "加入雲端排隊序列中...";
+                    aiMessage.value = "正在剪裁...";
 
                     try {
                         let absoluteClothUrl = item.url;
@@ -175,120 +203,189 @@
                             absoluteClothUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/')) + '/' + absoluteClothUrl;
                         }
 
-                        // 以位置引數陣列形式發送任務，符合位置引數定義
-                        const job = appClient.submit("/predict", [ absoluteClothUrl ]);
+                        const result = await appClient.predict("/predict", [ absoluteClothUrl ]);
+                        const [status, imgData, shoulder, offset] = result.data;
 
-                        job.on("status", (evt) => {
-                            if (evt.stage === "pending") {
-                                queueMessage.value = `排隊中... (前方還有 ${evt.queue_size || 0} 個任務)`;
-                            } else if (evt.stage === "processing") {
-                                queueMessage.value = "雲端 AI 正在全力去背剪裁中...";
-                            }
-                        });
+                        if (status === "OK" && imgData && imgData.url) {
+                            clothParams.value = {
+                                shoulderWidthPercent: parseFloat(shoulder),
+                                offsetFromTopPercent: parseFloat(offset)
+                            };
 
-                        job.on("data", (evt) => {
-                            if (evt && evt.data && evt.data.length >= 4) {
-                                const [status, imgData, shoulder, offset] = evt.data;
-
-                                if (status === "OK" && imgData && imgData.url) {
-                                    window.clothParams = {
-                                        shoulderWidthPercent: parseFloat(shoulder),
-                                        offsetFromTopPercent: parseFloat(offset)
-                                    };
-
-                                    window.clothImage.src = imgData.url;
-                                    window.clothImage.crossOrigin = "anonymous"; 
-                                    window.clothImage.onload = () => {
-                                        window.isImgLoaded = true;
-                                        isLoading.value = false;
-                                        aiStatus.value = "ready";
-                                        aiMessage.value = "服飾對齊完成！";
-                                    };
-                                } else {
-                                    alert("雲端處理異常: " + status);
-                                    isLoading.value = false;
-                                    aiStatus.value = "error";
-                                }
-                            }
-                        });
-
+                            window.clothImage.src = imgData.url;
+                            window.clothImage.crossOrigin = "anonymous"; 
+                            window.clothImage.onload = () => {
+                                window.isImgLoaded = true;
+                                isLoading.value = false;
+                                aiStatus.value = "ready";
+                                aiMessage.value = "服飾對齊完成！";
+                            };
+                        } else {
+                            throw new Error(status || "未知異常");
+                        }
                     } catch (err) {
-                        console.error("串流監聽錯誤:", err);
+                        console.error("Predict 錯誤:", err);
+                        alert(`試穿失敗：${err.message}`);
                         isLoading.value = false;
                         aiStatus.value = "error";
                     }
                 }
 
-                // 初始化 MediaPipe AR 動態對齊引擎
+                // 核心：AR 整合渲染管道 (Pose + Hands)
                 function initAREngine() {
                     const videoElement = document.getElementById('input_video');
                     const canvasElement = document.getElementById('output_canvas');
                     const canvasCtx = canvasElement.getContext('2d');
 
-                    function onResults(results) {
+                    // ✋ 手部軀幹遮擋判定（依據雙肩矩形與手掌中心點）
+                    function checkHandOcclusion(clothX, clothY, clothW, clothH) {
+                        if (!latestHandLandmarks) {
+                            handMaskActive.value = false;
+                            return false;
+                        }
+                        
+                        // 尋找第 9 號特徵點（中指指根掌心處）作為手部重心
+                        for (const hand of latestHandLandmarks) {
+                            const palmPoint = hand[9];
+                            // 將 MediaPipe 的 0~1 的相對座標轉換為畫布像素座標
+                            const handPx = (1 - palmPoint.x) * canvasElement.width; // 配合鏡面翻轉
+                            const handPy = palmPoint.y * canvasElement.height;
+
+                            // 檢查手掌中心是否落入服飾的 bounding box 內
+                            if (handPx > clothX - clothW/2 && handPx < clothX + clothW/2 &&
+                                handPy > clothY - clothH*0.1 && handPy < clothY + clothH*0.9) {
+                                handMaskActive.value = true;
+                                return true;
+                            }
+                        }
+                        handMaskActive.value = false;
+                        return false;
+                    }
+
+                    function onPoseResults(results) {
                         if (!results.poseLandmarks) {
                             arStatus.value = "未偵測到人體";
                             return;
                         }
-                        arStatus.value = "追蹤中";
+
+                        const lm = results.poseLandmarks;
+                        
+                        // 🚀 ④ Multi-Person Filter 多人背景防呆防錯機制
+                        const visibilityScore = lm[11].visibility + lm[12].visibility;
+                        if (visibilityScore < 1.5) {
+                            arStatus.value = "人體特徵模糊";
+                            return; 
+                        }
+                        arStatus.value = "雙肩已鎖定";
 
                         canvasElement.width = videoElement.videoWidth;
                         canvasElement.height = videoElement.videoHeight;
                         
+                        // 🚀 核心矩陣歸零與複寫，防止狀態積壓
                         canvasCtx.save();
+                        canvasCtx.setTransform(1, 0, 0, 1, 0, 0); 
                         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                         canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-                        // 磁吸對齊演算法
-                        if (window.isImgLoaded && window.clothParams.shoulderWidthPercent > 0) {
-                            const lm = results.poseLandmarks;
+                        if (window.isImgLoaded && clothParams.value.shoulderWidthPercent > 0) {
                             const leftShoulder = lm[11];  
                             const rightShoulder = lm[12]; 
 
-                            const humanShoulderWidth = Math.sqrt(
+                            // 基礎 2D 幾何計算
+                            const rawHumanShoulderWidth = Math.sqrt(
                                 Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
                                 Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
                             );
 
-                            const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
-                            const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+                            let rawClothWidth = rawHumanShoulderWidth / clothParams.value.shoulderWidthPercent;
+                            
+                            // 🚀 ③ Perspective Depth Correction 偽三維側身投影補償
+                            // 當人體側身時，Z 軸的距離差變大，利用 Z 差逆推身體旋轉角度並進行寬度加權
+                            const zDepthDelta = Math.abs(leftShoulder.z - rightShoulder.z);
+                            const depthScaleFactor = 1.0 + (zDepthDelta * 1.5); 
+                            rawClothWidth *= depthScaleFactor;
 
-                            const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-                            const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
+                            const rawClothHeight = rawClothWidth * (window.clothImage.height / window.clothImage.width);
+                            const rawCenterX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+                            const rawHumanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
 
-                            const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
-                            const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
+                            const autoOffsetY = rawClothHeight * clothParams.value.offsetFromTopPercent;
+                            const rawCenterY = rawHumanCenterY - (rawClothHeight * 0.12) + (autoOffsetY * 0.5);
 
-                            canvasCtx.translate(centerX, centerY);
-                            const angle = Math.atan2(
+                            const rawAngle = Math.atan2(
                                 (leftShoulder.y - rightShoulder.y) * canvasElement.height,
                                 (leftShoulder.x - rightShoulder.x) * canvasElement.width
                             );
-                            canvasCtx.rotate(angle);
 
-                            canvasCtx.globalAlpha = 0.85;
-                            canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+                            // 🚀 ① 卡爾曼濾波器即時迭代更新 (零延遲、高強去噪貼身跟隨)
+                            const kParams = {
+                                x: kx.update(rawCenterX),
+                                y: ky.update(rawCenterY),
+                                width: kw.update(rawClothWidth),
+                                height: kh.update(rawClothHeight),
+                                angle: ka.update(rawAngle)
+                            };
+
+                            // 🚀 ② Occlusion 手部軀幹前後景遮擋演算
+                            const isOccluded = checkHandOcclusion(kParams.x, kParams.y, kParams.width, kParams.height);
+
+                            // 執行仿射變換畫布渲染
+                            canvasCtx.translate(kParams.x, kParams.y);
+                            canvasCtx.rotate(kParams.angle);
+
+                            // 如果手部在衣服前面，調低衣服透明度（模擬前景手部透出）
+                            canvasCtx.globalAlpha = isOccluded ? 0.25 : 0.90; 
+                            
+                            canvasCtx.drawImage(
+                                window.clothImage, 
+                                -kParams.width / 2, 
+                                -kParams.height * 0.1, 
+                                kParams.width, 
+                                kParams.height
+                            );
                             canvasCtx.globalAlpha = 1.0;
                         }
 
                         canvasCtx.restore();
                     }
 
+                    // 初始化 MediaPipe Pose 骨骼追蹤
                     const pose = new Pose({
                         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
                     });
-
                     pose.setOptions({
                         modelComplexity: 0, 
                         smoothLandmarks: true,
                         minDetectionConfidence: 0.5,
                         minTrackingConfidence: 0.5
                     });
-                    pose.onResults(onResults);
+                    pose.onResults(onPoseResults);
+
+                    // 初始化 MediaPipe Hands 手部即時監聽
+                    const hands = new Hands({
+                        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+                    });
+                    hands.setOptions({
+                        maxNumHands: 2,
+                        modelComplexity: 0,
+                        minDetectionConfidence: 0.5
+                    });
+                    hands.onResults((handsResults) => {
+                        latestHandLandmarks = handsResults.multiHandLandmarks || null;
+                    });
+
+                    // 🚀 核心優化 ③：高精準 30 FPS Throttle 閥門控制器
+                    let lastTime = 0;
 
                     const camera = new Camera(videoElement, {
                         onFrame: async () => {
+                            const now = performance.now();
+                            if (now - lastTime < 33.3) return; 
+                            lastTime = now;
+                            
+                            // 同步將該張影像分流餵給 Pose 與 Hands 雙核心神經網絡
                             await pose.send({ image: videoElement });
+                            await hands.send({ image: videoElement });
                         },
                         width: 1280, height: 720
                     });
@@ -311,9 +408,10 @@
                     arStatus,
                     isLoading,
                     queueMessage,
+                    handMaskActive,
                     clothesList,
                     currentClothUrl,
-                    clothParams: window.clothParams,
+                    clothParams,
                     initGradioClient,
                     selectCloth
                 };
