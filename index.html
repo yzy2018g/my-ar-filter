@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepFashion AR 動態試穿間 v3.1</title>
+    <title>DeepFashion AR 動態試穿間 v3.5</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
     <script type="module">
@@ -26,8 +26,8 @@
             <div class="bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl flex items-center gap-3">
                 <div class="flex flex-col">
                     <span class="text-[10px] font-bold text-slate-500 uppercase">Hugging Face Space URL</span>
-                    <input type="text" v-model="spaceId" @change="initGradioClient"
-                           class="bg-transparent text-xs font-mono text-slate-200 focus:outline-none border-b border-transparent focus:border-indigo-500 pb-0.5 w-64">
+                    <input type="text" v-model="spaceUrl" @change="initGradioClient"
+                           class="bg-transparent text-xs font-mono text-slate-200 focus:outline-none border-b border-transparent focus:border-indigo-500 pb-0.5 w-72">
                 </div>
                 <div class="flex items-center gap-1.5 border-l border-slate-800 pl-3">
                     <span :class="['h-2.5 w-2.5 rounded-full animate-pulse', statusColorClass]"></span>
@@ -98,16 +98,17 @@
 
         createApp({
             setup() {
-                // 🚀 防防錯修正 1：改用直接的實體伺服器鏡像網址，避開名稱解析抽風
-                const spaceId = ref("https://michaelyo-my-ar-cloth-api.hf.space"); 
-                const aiStatus = ref("disconnect"); 
-                const aiMessage = ref("等待設定 Space ID");
+                // 狀態與設定（整合最穩定的直接 URL）
+                const spaceUrl = ref("https://michaelyo-my-ar-cloth-api.hf.space"); 
+                const aiStatus = ref("disconnect"); // disconnect, connecting, ready, error, processing
+                const aiMessage = ref("等待設定 Space URL");
                 const arStatus = ref("相機初始化中...");
                 const isLoading = ref(false);
                 
                 const clothesList = ref([]);
                 const currentClothUrl = ref("");
                 
+                // 全域狀態封裝，阻斷非同步渲染造成的崩潰
                 window.clothImage = new Image();
                 window.isImgLoaded = false;
                 window.clothParams = {
@@ -127,41 +128,42 @@
                     return aiMessage.value;
                 });
 
-                // 1. 初始化 Gradio Client 連線
+                // 1. 初始化 Gradio Client
                 let gradioApp = null;
                 async function initGradioClient() {
-                    let target = spaceId.value.trim();
+                    let target = spaceUrl.value.trim();
                     if (!target) return;
                     
                     try {
                         aiStatus.value = "connecting";
                         aiMessage.value = "正在連線至 HF Space...";
                         
-                        // 🚀 防錯修正 2：強制關閉跨網域憑證檢查，防止被瀏覽器安全性原則阻擋
+                        // 強制配置 with_credentials: false 防止 CORS 阻擋
                         gradioApp = await window.GradioClient(target, { with_credentials: false });
                         
                         aiStatus.value = "ready";
                     } catch (err) {
-                        console.error("Gradio 連線錯誤詳細資訊:", err);
+                        console.error("Gradio 連線發生錯誤:", err);
                         aiStatus.value = "error";
-                        aiMessage.value = "連線失敗，請檢查瀏覽器 F12 控制台";
+                        aiMessage.value = "連線失敗，請檢查 Space 狀態";
                     }
                 }
 
-                // 2. 讀取衣櫥設定檔
+                // 2. 讀取衣櫥設定檔 clothes.json
                 async function loadClothesConfig() {
                     try {
                         const res = await fetch('clothes.json');
                         clothesList.value = await res.json();
                     } catch (err) {
                         console.error("無法讀取 clothes.json:", err);
+                        arStatus.value = "衣櫥載入失敗";
                     }
                 }
 
-                // 3. 點選衣服：發送 API 請求
+                // 3. 點選服飾並向雲端發送 predict 請求
                 async function selectCloth(item) {
                     if (!gradioApp) {
-                        alert("AI 伺服器尚未連線成功！");
+                        alert("AI 伺服器尚未連線成功，請確認頂部狀態燈！");
                         return;
                     }
                     
@@ -181,6 +183,7 @@
                                 offsetFromTopPercent: parseFloat(offset)
                             };
 
+                            // 非同步安全載入透明貼圖
                             window.clothImage.src = imgData.url;
                             window.clothImage.onload = () => {
                                 window.isImgLoaded = true;
@@ -188,19 +191,19 @@
                                 aiStatus.value = "ready";
                             };
                         } else {
-                            alert("雲端處理異常: " + status);
+                            alert("雲端回傳資料異常: " + status);
                             isLoading.value = false;
                             aiStatus.value = "error";
                         }
                     } catch (err) {
-                        console.error(err);
-                        alert("呼叫雲端 API 失敗，請確認你的 Space 是否在運行中。");
+                        console.error("API 請求錯誤:", err);
+                        alert("呼叫雲端 AI 失敗，請確認你的 Space 是否在 Running 狀態。");
                         isLoading.value = false;
                         aiStatus.value = "error";
                     }
                 }
 
-                // 4. 初始化 MediaPipe AR 引擎
+                // 4. 初始化 MediaPipe AR 動態對齊引擎
                 function initAREngine() {
                     const videoElement = document.getElementById('input_video');
                     const canvasElement = document.getElementById('output_canvas');
@@ -218,28 +221,34 @@
                         
                         canvasCtx.save();
                         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                        // 1. 繪製底部視訊影像
                         canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-                        // 全自動骨骼磁吸對齊演算法
+                        // 2. 磁吸演算法：當衣服載入完成且有雲端特徵佔比時觸發
                         if (window.isImgLoaded && window.clothParams.shoulderWidthPercent > 0) {
                             const lm = results.poseLandmarks;
-                            const leftShoulder = lm[11];  
-                            const rightShoulder = lm[12]; 
+                            const leftShoulder = lm[11];  // 左肩
+                            const rightShoulder = lm[12]; // 右肩
 
+                            // 向量幾何：計算人體在畫面上實際的肩寬（像素）
                             const humanShoulderWidth = Math.sqrt(
                                 Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
                                 Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
                             );
 
+                            // 依雲端逆推衣服在畫布上的實際物理寬高
                             const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
                             const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
 
+                            // 找出雙肩中心中心點
                             const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
                             const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
 
+                            // 根據領口高低偏移量進行補償定位
                             const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
                             const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
 
+                            // 移動畫布原點並旋轉對齊肩膀傾斜度
                             canvasCtx.translate(centerX, centerY);
                             const angle = Math.atan2(
                                 (leftShoulder.y - rightShoulder.y) * canvasElement.height,
@@ -247,6 +256,7 @@
                             );
                             canvasCtx.rotate(angle);
 
+                            // 渲染透明衣服圖層 (套用 85% 透明度完美混色)
                             canvasCtx.globalAlpha = 0.85;
                             canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
                             canvasCtx.globalAlpha = 1.0;
@@ -280,7 +290,7 @@
                         .catch(err => { arStatus.value = "鏡頭啟動失敗: " + err; });
                 }
 
-                // 🚀 防錯修正 3：調整生命週期優先順序，先確保 API 連上，再開視訊鏡頭
+                // 生命週期統一調度
                 onMounted(async () => {
                     await loadClothesConfig();
                     await initGradioClient();
@@ -288,7 +298,7 @@
                 });
 
                 return {
-                    spaceId,
+                    spaceUrl,
                     aiStatusMessage,
                     statusColorClass,
                     arStatus,
@@ -302,965 +312,5 @@
             }
         }).mount('#app');
     </script>
-</body>
-</html>
-                const aiStatus = ref("disconnect"); // disconnect, connecting, ready, error, processing
-                const aiMessage = ref("等待設定 Space ID");
-                const arStatus = ref("相機初始化中...");
-                const isLoading = ref(false);
-                
-                const clothesList = ref([]);
-                const currentClothUrl = ref("");
-                
-                // 全域變數掛載，避免 MediaPipe 渲染執行緒衝突
-                window.clothImage = new Image();
-                window.isImgLoaded = false;
-                window.clothParams = {
-                    shoulderWidthPercent: 0.0,
-                    offsetFromTopPercent: 0.0
-                };
-
-                // 控制指示燈顏色
-                const statusColorClass = computed(() => {
-                    if (aiStatus.value === 'ready') return 'bg-emerald-500';
-                    if (aiStatus.value === 'connecting' || aiStatus.value === 'processing') return 'bg-amber-400';
-                    if (aiStatus.value === 'error') return 'bg-rose-500';
-                    return 'bg-slate-600';
-                });
-
-                const aiStatusMessage = computed(() => {
-                    if (aiStatus.value === 'ready') return '雲端 AI 已就緒';
-                    return aiMessage.value;
-                });
-
-                // 1. 初始化 Gradio Client 連線
-                let gradioApp = null;
-                async function initGradioClient() {
-                    if (!spaceId.value.trim()) return;
-                    try {
-                        aiStatus.value = "connecting";
-                        aiMessage.value = "正在連線至 HF Space...";
-                        gradioApp = await window.GradioClient(spaceId.value.trim());
-                        aiStatus.value = "ready";
-                    } catch (err) {
-                        console.error(err);
-                        aiStatus.value = "error";
-                        aiMessage.value = "連線失敗，請檢查 Space ID";
-                    }
-                }
-
-                // 2. 讀取衣櫥設定檔
-                async function loadClothesConfig() {
-                    try {
-                        const res = await fetch('clothes.json');
-                        clothesList.value = await res.json();
-                    } catch (err) {
-                        console.error("無法讀取 clothes.json:", err);
-                    }
-                }
-
-                // 3. 點選衣服：發送 API 請求
-                async function selectCloth(item) {
-                    if (!gradioApp) {
-                        alert("AI 伺服器尚未連線成功！");
-                        return;
-                    }
-                    
-                    currentClothUrl.value = item.url;
-                    isLoading.value = true;
-                    aiStatus.value = "processing";
-                    aiMessage.value = "AI 剪裁中...";
-                    window.isImgLoaded = false;
-
-                    try {
-                        const res = await gradioApp.predict("/predict", [ item.url ]);
-                        const [status, imgData, shoulder, offset] = res.data;
-
-                        if (status === "OK" && imgData && imgData.url) {
-                            window.clothParams = {
-                                shoulderWidthPercent: parseFloat(shoulder),
-                                offsetFromTopPercent: parseFloat(offset)
-                            };
-
-                            window.clothImage.src = imgData.url;
-                            window.clothImage.onload = () => {
-                                window.isImgLoaded = true;
-                                isLoading.value = false;
-                                aiStatus.value = "ready";
-                            };
-                        } else {
-                            alert("雲端處理異常: " + status);
-                            isLoading.value = false;
-                            aiStatus.value = "error";
-                        }
-                    } catch (err) {
-                        console.error(err);
-                        alert("呼叫雲端 API 失敗，請確認你的 Space 是否在運行中。");
-                        isLoading.value = false;
-                        aiStatus.value = "error";
-                    }
-                }
-
-                // 4. 初始化 MediaPipe AR 引擎
-                function initAREngine() {
-                    const videoElement = document.getElementById('input_video');
-                    const canvasElement = document.getElementById('output_canvas');
-                    const canvasCtx = canvasElement.getContext('2d');
-
-                    function onResults(results) {
-                        if (!results.poseLandmarks) {
-                            arStatus.value = "未偵測到人體";
-                            return;
-                        }
-                        arStatus.value = "追蹤中";
-
-                        canvasElement.width = videoElement.videoWidth;
-                        canvasElement.height = videoElement.videoHeight;
-                        
-                        canvasCtx.save();
-                        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-                        canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-                        // 🚀 全自動骨骼磁吸對齊演算法
-                        if (window.isImgLoaded && window.clothParams.shoulderWidthPercent > 0) {
-                            const lm = results.poseLandmarks;
-                            const leftShoulder = lm[11];  
-                            const rightShoulder = lm[12]; 
-
-                            // 計算畫面上雙肩的實際像素寬度
-                            const humanShoulderWidth = Math.sqrt(
-                                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-                                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-                            );
-
-                            // 根據衣服肩膀佔比逆推圖層寬高
-                            const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
-                            const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-                            // 定位點計算
-                            const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-                            const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
-
-                            const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
-                            const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
-
-                            // 畫布位移與旋轉對齊
-                            canvasCtx.translate(centerX, centerY);
-                            const angle = Math.atan2(
-                                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-                            );
-                            canvasCtx.rotate(angle);
-
-                            // 融合衣服透明圖層
-                            canvasCtx.globalAlpha = 0.85;
-                            canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-                            canvasCtx.globalAlpha = 1.0;
-                        }
-
-                        canvasCtx.restore();
-                    }
-
-                    const pose = new Pose({
-                        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-                    });
-
-                    pose.setOptions({
-                        modelComplexity: 0, 
-                        smoothLandmarks: true,
-                        minDetectionConfidence: 0.5,
-                        minTrackingConfidence: 0.5
-                    });
-                    pose.onResults(onResults);
-
-                    const camera = new Camera(videoElement, {
-                        onFrame: async () => {
-                            await pose.send({ image: videoElement });
-                        },
-                        width: 1280,
-                        height: 720
-                    });
-
-                    camera.start()
-                        .then(() => { arStatus.value = "鏡頭就緒"; })
-                        .catch(err => { arStatus.value = "鏡頭啟動失敗: " + err; });
-                }
-
-                // 進入頁面自動初始化
-                onMounted(async () => {
-                    await loadClothesConfig();
-                    await initGradioClient();
-                    initAREngine();
-                });
-
-                return {
-                    spaceId,
-                    aiStatusMessage,
-                    statusColorClass,
-                    arStatus,
-                    isLoading,
-                    clothesList,
-                    currentClothUrl,
-                    clothParams: window.clothParams,
-                    initGradioClient,
-                    selectCloth
-                };
-            }
-        }).mount('#app');
-    </script>
-</body>
-</html>
-        };
-
-        // 1. 自動初始化 Gradio Client
-        async function initGradioClient() {
-            const spaceId = document.getElementById('apiUrl').value.trim();
-            const dot = document.getElementById('statusDot');
-            const txt = document.getElementById('connectionStatus');
-
-            if(!spaceId) return;
-
-            try {
-                dot.className = "inline-flex h-3 w-3 rounded-full bg-amber-400 animate-pulse";
-                txt.innerText = "正在連線至 HF Space...";
-                
-                // 向 Gradio SDK 註冊 Space
-                gradioApp = await window.GradioClient(spaceId);
-                
-                dot.className = "inline-flex h-3 w-3 rounded-full bg-emerald-500";
-                txt.innerText = "雲端 AI 已就緒";
-                txt.className = "text-xs font-semibold text-emerald-600";
-            } catch (error) {
-                console.error(error);
-                dot.className = "inline-flex h-3 w-3 rounded-full bg-rose-500";
-                txt.innerText = "連線失敗，請檢查 Space ID";
-                txt.className = "text-xs font-semibold text-rose-600";
-            }
-        }
-
-        // 當使用者手動修改 Space ID 時重新連線
-        document.getElementById('apiUrl').addEventListener('change', initGradioClient);
-
-        // 2. 讀取同目錄下的 clothes.json
-        async function loadClothesConfig() {
-            try {
-                const response = await fetch('clothes.json');
-                const clothes = await response.json();
-                
-                const listContainer = document.getElementById('clothesList');
-                listContainer.innerHTML = '';
-
-                clothes.forEach(item => {
-                    const card = document.createElement('div');
-                    card.className = "bg-slate-50 border border-slate-200 rounded-xl p-2.5 cursor-pointer hover:border-indigo-500 hover:bg-indigo-50/30 transition group text-center";
-                    card.onclick = () => tryOnCloth(item.url, card);
-                    
-                    card.innerHTML = `
-                        <div class="h-32 bg-white border border-slate-100 rounded-lg flex items-center justify-center overflow-hidden mb-2 p-1 shadow-2xs">
-                            <img src="${item.url}" class="max-h-full max-w-full object-contain group-hover:scale-105 transition duration-300">
-                        </div>
-                        <div class="text-xs font-bold text-slate-700 truncate">${item.name}</div>
-                    `;
-                    listContainer.appendChild(card);
-                });
-            } catch (error) {
-                console.error("無法讀取 clothes.json:", error);
-                document.getElementById('clothesList').innerHTML = `<div class="text-rose-500 text-xs col-span-2 text-center py-6 font-medium">❌ 讀取 clothes.json 失敗</div>`;
-            }
-        }
-
-        // 3. 核心試穿請求
-        async function tryOnCloth(clothUrl, cardElement) {
-            if (!gradioApp) {
-                alert('AI 尚未連線成功，請確認頂部 Space ID 是否正確並已就緒。');
-                return;
-            }
-
-            // 切換選取框高亮
-            document.querySelectorAll('#clothesList > div').forEach(el => el.classList.remove('ring-2', 'ring-indigo-500', 'bg-indigo-50/50'));
-            cardElement.classList.add('ring-2', 'ring-indigo-500', 'bg-indigo-50/50');
-
-            const clothOverlayImg = document.getElementById('clothOverlayImg');
-            const loadingSpinner = document.getElementById('loadingSpinner');
-            const shoulderRatio = document.getElementById('shoulderRatio');
-            const offsetRatio = document.getElementById('offsetRatio');
-
-            // 顯示 Loading
-            loadingSpinner.classList.remove('hidden');
-
-            try {
-                // 呼叫原本 Python 的預設 endpoint '/predict'
-                const result = await gradioApp.predict("/predict", [ clothUrl ]);
-                
-                // 解構 Python 回傳的：[status, final_img, shoulder_ratio, offset_ratio]
-                const [status, imgData, shoulder, offset] = result.data;
-
-                if (status === "OK" && imgData && imgData.url) {
-                    // 更新右上角數據
-                    shoulderRatio.innerText = Number(shoulder).toFixed(4);
-                    offsetRatio.innerText = Number(offset).toFixed(4);
-
-                    // 渲染服飾疊加層
-                    clothOverlayImg.src = imgData.url;
-                    clothOverlayImg.classList.remove('hidden');
-
-                    /* 💡 這裡留給前端調整衣服的對齊演算法：
-                       你可以依據傳回來的 shoulder (肩寬比) 與 offset (偏移比)，
-                       用 CSS transform 去微調衣服的大小與高度，完美貼合底下你的身形！
-                       例如：
-                       clothOverlayImg.style.transform = `scale(${shoulder * 1.8}) translateY(${offset * 20}px)`;
-                    */
-
-                } else {
-                    alert(`AI 處理完成，但回傳狀態不正常: ${status}`);
-                }
-            } catch (error) {
-                console.error("API 呼叫發生錯誤:", error);
-                alert("試穿失敗，詳細錯誤請見瀏覽器 F12 Console 控制台。");
-            } finally {
-                loadingSpinner.classList.add('hidden');
-            }
-        }
-    </script>
-</body>
-</html>
-                // 讀取同目錄下的 clothes.json
-                const response = await fetch('clothes.json');
-                const clothes = await response.json();
-                
-                const listContainer = document.getElementById('clothesList');
-                listContainer.innerHTML = ''; // 清空提示
-
-                clothes.forEach(item => {
-                    // 建立衣物卡片
-                    const card = document.createElement('div');
-                    card.className = "border border-gray-200 rounded-lg p-2 cursor-pointer hover:border-indigo-500 hover:shadow-md transition group text-center";
-                    card.onclick = () => tryOnCloth(item.url, card);
-                    
-                    card.innerHTML = `
-                        <div class="h-32 bg-gray-50 rounded flex items-center justify-center overflow-hidden mb-2">
-                            <img src="${item.url}" class="max-h-full max-w-full object-contain group-hover:scale-105 transition duration-200">
-                        </div>
-                        <div class="text-xs font-medium text-gray-700 truncate">${item.name}</div>
-                    `;
-                    listContainer.appendChild(card);
-                });
-            } catch (error) {
-                console.error("載入 clothes.json 失敗:", error);
-                document.getElementById('clothesList').innerHTML = `<div class="text-red-500 text-xs col-span-2 text-center">無法載入 clothes.json，請檢查檔案是否存在。</div>`;
-            }
-        }
-
-        // 核心試穿功能
-        async function tryOnCloth(clothUrl, cardElement) {
-            const apiUrl = document.getElementById('apiUrl').value.trim();
-            if (!apiUrl) {
-                alert('請先填入頂部的 Gradio API 網址！');
-                return;
-            }
-
-            // UI 狀態切換
-            document.querySelectorAll('#clothesList > div').forEach(el => el.classList.remove('ring-2', 'ring-indigo-500'));
-            cardElement.classList.add('ring-2', 'ring-indigo-500');
-
-            const statusTxt = document.getElementById('statusTxt');
-            const clothOverlayImg = document.getElementById('clothOverlayImg');
-            const loadingSpinner = document.getElementById('loadingSpinner');
-            const shoulderRatio = document.getElementById('shoulderRatio');
-            const offsetRatio = document.getElementById('offsetRatio');
-
-            statusTxt.innerText = "傳送衣服至 AI 伺服器...";
-            statusTxt.className = "font-bold text-blue-500";
-            loadingSpinner.classList.remove('hidden');
-            clothOverlayImg.classList.add('hidden');
-
-            try {
-                // 連接 Gradio
-                const app = await window.GradioClient(apiUrl);
-                // 呼叫預設的 /predict 節點
-                const result = await app.predict("/predict", [ clothUrl ]);
-                
-                // 解構 Python 回傳值: [status, final_img, shoulder_ratio, offset_ratio]
-                const [status, imgData, shoulder, offset] = result.data;
-                
-                statusTxt.innerText = status;
-
-                if (status === "OK" && imgData && imgData.url) {
-                    statusTxt.className = "font-bold text-green-600";
-                    
-                    // 填入計算數值
-                    shoulderRatio.innerText = Number(shoulder).toFixed(4);
-                    offsetRatio.innerText = Number(offset).toFixed(4);
-
-                    // 將去背、去皮膚後的衣服顯示在疊加層
-                    clothOverlayImg.src = imgData.url;
-                    clothOverlayImg.classList.remove('hidden');
-
-                    /**
-                     * 💡 智慧對齊演算法說明：
-                     * 這裡可以根據 Python 計算出來的 shoulder 和 offset 來微調前端圖片的位置與大小。
-                     * 以下範例直接疊加。如果需要根據比例縮放，可以透過 style 調整：
-                     * clothOverlayImg.style.transform = `scale(${shoulder * 2}) translateY(${offset * 100}px)`;
-                     */
-                } else {
-                    statusTxt.className = "font-bold text-red-500";
-                    alert("AI 處理失敗: " + status);
-                }
-            } catch (error) {
-                console.error(error);
-                statusTxt.innerText = "連線失敗";
-                statusTxt.className = "font-bold text-red-600";
-            } finally {
-                loadingSpinner.classList.add('hidden');
-            }
-        }
-
-        // 網頁開啟時自動載入 JSON
-        window.onload = loadClothesConfig;
-    </script>
-</body>
-</html>
-
-      this.clothImage.onerror = () => {
-        this.status = "error";
-        this.message = "image load failed";
-      };
-
-      this.clothImage.src = this.clothUrl;
-    },
-
-    /* =========================
-       AR ENGINE
-    ========================= */
-    initAR() {
-      const video = document.getElementById("video");
-      const canvas = document.getElementById("canvas");
-      const ctx = canvas.getContext("2d");
-
-      const pose = new Pose({
-        locateFile: f =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
-      });
-
-      pose.setOptions({
-        modelComplexity: 1,
-        smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-      });
-
-      pose.onResults(results => {
-        if (!results.poseLandmarks) return;
-
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-
-        // 🔥 important reset (avoid transform bug)
-        ctx.setTransform(1,0,0,1,0,0);
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-
-        ctx.drawImage(results.image,0,0,canvas.width,canvas.height);
-
-        if (!this.clothLoaded) return;
-
-        const lm = results.poseLandmarks;
-        const L = lm[11], R = lm[12];
-
-        const dx = (L.x - R.x) * canvas.width;
-        const dy = (L.y - R.y) * canvas.height;
-
-        const dist = Math.sqrt(dx*dx + dy*dy);
-
-        const w = dist * 2.0;
-        const h = w * (this.clothImage.height / this.clothImage.width);
-
-        const cx = ((L.x + R.x)/2) * canvas.width;
-        const cy = ((L.y + R.y)/2) * canvas.height;
-
-        const angle = Math.atan2(dy, dx);
-
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(angle);
-
-        ctx.globalAlpha = 0.85;
-        ctx.drawImage(this.clothImage, -w/2, -h*0.1, w, h);
-        ctx.globalAlpha = 1;
-
-        ctx.restore();
-      });
-
-      const camera = new Camera(video, {
-        onFrame: async () => {
-          await pose.send({ image: video });
-        },
-        width: 1280,
-        height: 720
-      });
-
-      camera.start().then(() => {
-        this.status = "camera ready";
-      }).catch(err => {
-        this.status = "camera error";
-        this.message = err.toString();
-      });
-    }
-  }
-});
-</script>
-
-</body>
-</html>                window.clothImage.src = res.data[1]; 
-                window.clothParams = {
-                  shoulderWidthPercent: res.data[2],
-                  offsetFromTopPercent: res.data[3]
-                };
-                this.aiStatus = '就緒';
-                this.aiMessage = `AI 成功切除頭部與膚色！肩膀佔比: ${(res.data[2]*100).toFixed(1)}%, 領口偏移: ${(res.data[3]*100).toFixed(1)}%`;
-              } else {
-                this.aiStatus = '失敗';
-                this.aiMessage = '雲端回傳資料異常：' + res.data[0];
-              }
-            })
-            .catch(err => {
-              this.aiStatus = '錯誤';
-              this.aiMessage = '無法連線到 Hugging Face，請確認 API 是否處於 Running 狀態。';
-              print(err);
-            });
-          });
-        },
-        // 輔助函式：模擬 `handle_file`，將網域內的圖片轉成 Base64
-        getImgBase64FromUrl(url, callback) {
-          const img = new Image();
-          img.crossOrigin = 'Anonymous'; // 避開網域限制
-          img.src = url + '?t=' + new Date().getTime(); // 破除快取
-          img.onload = function() {
-            const canvas = document.createElement('canvas');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0);
-            callback(canvas.toDataURL('image/png'));
-          };
-        },
-        initAR() {
-          const videoElement = document.getElementById('input_video');
-          const canvasElement = document.getElementById('output_canvas');
-          const canvasCtx = canvasElement.getContext('2d');
-
-          function onResults(results) {
-            if (!results.poseLandmarks) return;
-
-            canvasElement.width = videoElement.videoWidth;
-            canvasElement.height = videoElement.videoHeight;
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            // 🚀 全自動磁吸對齊演算法：不再用手動手寫，用雲端算出來的精準特徵點對齊
-            if (window.isImgLoaded && window.clothParams.shoulderWidthPercent) {
-              const lm = results.poseLandmarks;
-              const leftShoulder = lm[11];
-              const rightShoulder = lm[12];
-
-              // 計算畫面上「人」的肩膀寬度（像素）
-              const humanShoulderWidth = Math.sqrt(
-                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-              );
-
-              // 根據衣服本身肩膀佔整張圖的佔比，逆推這張透明圖應該縮放幾倍
-              const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
-              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-              // 定位：將衣服的肩膀中心線與人體雙肩中心對齊
-              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-              const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
-              
-              // 自動計算領口高低偏移補償
-              const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
-              // 補償繪圖基點（衣服中心點在脖子下方），並加入旋轉補償
-              const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
-
-              canvasCtx.translate(centerX, centerY);
-              
-              // 旋轉對齊肩膀傾斜度
-              const angle = Math.atan2(
-                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-              );
-              canvasCtx.rotate(angle);
-
-              // 渲染雲端送來的純衣服透明圖
-              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-            }
-            canvasCtx.restore();
-          }
-
-          const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-          pose.onResults(onResults);
-
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, height: 720
-          });
-          camera.start();
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-          function onResults(results) {
-            if (!results.poseLandmarks) return;
-
-            canvasElement.width = videoElement.videoWidth;
-            canvasElement.height = videoElement.videoHeight;
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            // 💡 修正點 3：使用 window 全域狀態，徹底阻斷非同步造成的崩潰
-            if (window.isImgLoaded && window.clothParams) {
-              const lm = results.poseLandmarks;
-              const leftShoulder = lm[11];
-              const rightShoulder = lm[12];
-
-              const shoulderWidth = Math.sqrt(
-                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-              );
-
-              const scaleFactor = window.clothParams.scale;
-              const offsetFactor = window.clothParams.offset;
-
-              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
-
-              const clothWidth = shoulderWidth * scaleFactor;
-              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-              canvasCtx.translate(centerX, centerY);
-              const angle = Math.atan2(
-                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-              );
-              canvasCtx.rotate(angle);
-
-              canvasCtx.globalAlpha = 0.85;
-              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-              canvasCtx.globalAlpha = 1.0;
-            }
-            canvasCtx.restore();
-          }
-
-          const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-          pose.onResults(onResults);
-
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, height: 720
-          });
-          camera.start();
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            if (isImgLoaded) {
-              const lm = results.poseLandmarks;
-              const leftShoulder = lm[11];
-              const rightShoulder = lm[12];
-
-              const shoulderWidth = Math.sqrt(
-                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-              );
-
-              const scaleFactor = self.currentCloth.scale || 2.0;
-              const offsetFactor = self.currentCloth.offset || 0.2;
-
-              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
-
-              const clothWidth = shoulderWidth * scaleFactor;
-              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-              canvasCtx.translate(centerX, centerY);
-              const angle = Math.atan2(
-                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-              );
-              canvasCtx.rotate(angle);
-
-              canvasCtx.globalAlpha = 0.85;
-              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-              canvasCtx.globalAlpha = 1.0;
-            }
-            canvasCtx.restore();
-          }
-
-          const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-          pose.onResults(onResults);
-
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, height: 720
-          });
-          camera.start();
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-      methods: {
-        selectCloth(cloth) {
-          this.currentCloth = cloth;
-          window.clothImage.src = cloth.src;
-        },
-        initAR() {
-          const videoElement = document.getElementById('input_video');
-          const canvasElement = document.getElementById('output_canvas');
-          const canvasCtx = canvasElement.getContext('2d');
-
-          window.clothImage = new Image();
-          window.clothImage.src = this.currentCloth.src;
-          let isImgLoaded = false;
-          window.clothImage.onload = () => { isImgLoaded = true; };
-
-          const self = this;
-
-          function onResults(results) {
-            if (!results.poseLandmarks) return;
-
-            canvasElement.width = videoElement.videoWidth;
-            canvasElement.height = videoElement.videoHeight;
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            if (isImgLoaded) {
-              const lm = results.poseLandmarks;
-              const leftShoulder = lm[11];
-              const rightShoulder = lm[12];
-
-              const shoulderWidth = Math.sqrt(
-                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-              );
-
-              const scaleFactor = self.currentCloth.scale;
-              const offsetFactor = self.currentCloth.offset;
-
-              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
-
-              const clothWidth = shoulderWidth * scaleFactor;
-              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-              canvasCtx.translate(centerX, centerY);
-              const angle = Math.atan2(
-                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-              );
-              canvasCtx.rotate(angle);
-
-              // 💡 體驗優化：加入 85% 的透明度融合，讓真人的背景和衣服濾鏡重疊時更自然
-              canvasCtx.globalAlpha = 0.85;
-              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-              canvasCtx.globalAlpha = 1.0; // 恢復透明度
-            }
-            canvasCtx.restore();
-          }
-
-          const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-          pose.onResults(onResults);
-
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, height: 720
-          });
-          camera.start();
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-            canvasCtx.save();
-            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
-            
-            // 1. 繪製底部鏡頭影像
-            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
-
-            // 2. 如果衣服圖片載入成功，開始計算人體位置並疊加
-            if (isImgLoaded) {
-              const lm = results.poseLandmarks;
-              const leftShoulder = lm[11];  // 左肩特徵點
-              const rightShoulder = lm[12]; // 右肩特徵點
-
-              // 向量幾何公式：計算兩肩在螢幕上的實際像素寬度
-              const shoulderWidth = Math.sqrt(
-                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
-                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
-              );
-
-              // 讀取當前點選服飾的縮放比與位移參數
-              const scaleFactor = self.currentCloth.scale;
-              const offsetFactor = self.currentCloth.offset;
-
-              // 計算胸口中心點座標
-              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
-
-              // 依肩膀寬度動態決定衣服大小
-              const clothWidth = shoulderWidth * scaleFactor;
-              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-              // 移動畫布原點至胸口，處理旋轉
-              canvasCtx.translate(centerX, centerY);
-              const angle = Math.atan2(
-                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-              );
-              canvasCtx.rotate(angle);
-
-              // 繪製衣服 (置中對齊)
-              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-            }
-            canvasCtx.restore();
-          }
-
-          // 設定 MediaPipe Pose 參數
-          const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          
-          pose.setOptions({ 
-            modelComplexity: 0, // 0 適合手機順暢運行
-            smoothLandmarks: true, 
-            minDetectionConfidence: 0.5, 
-            minTrackingConfidence: 0.5 
-          });
-          pose.onResults(onResults);
-
-          // 啟動手機相機追蹤
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, 
-            height: 720
-          });
-          
-          camera.start().then(() => {
-            self.statusMessage = '設備已就緒，請對準雙肩';
-          }).catch(err => {
-            self.statusMessage = '鏡頭啟動失敗: ' + err;
-          });
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-          camera.start().then(() => {
-            self.statusMessage = '相機已啟動，請後退讓相機拍到雙肩';
-          }).catch(err => {
-            self.statusMessage = '相機啟動失敗: ' + err;
-          });
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-              // 讀取當前選擇衣服的參數
-              const scaleFactor = self.currentCloth.scale;
-              const offsetFactor = self.currentCloth.offset;
-
-              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
-              const centerY = ((leftShoulder.y + rightShoulder.y) / 2 + offsetFactor) * canvasElement.height;
-
-              const clothWidth = shoulderWidth * scaleFactor;
-              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
-
-              canvasCtx.translate(centerX, centerY);
-              const angle = Math.atan2(
-                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
-                (leftShoulder.x - rightShoulder.x) * canvasElement.width
-              );
-              canvasCtx.rotate(angle);
-
-              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
-            }
-            canvasCtx.restore();
-          }
-
-          const pose = new Pose({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-          pose.onResults(onResults);
-
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, height: 720
-          });
-          
-          camera.start().then(() => {
-            self.statusMessage = '相機已啟動，請將全身/上半身對準鏡頭';
-          }).catch(err => {
-            self.statusMessage = '相機啟動失敗: ' + err;
-          });
-        }
-      }
-    });
-  </script>
-</body>
-</html>
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-          });
-          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-          pose.onResults(onResults);
-
-          const camera = new Camera(videoElement, {
-            onFrame: async () => { await pose.send({image: videoElement}); },
-            width: 1280, height: 720
-          });
-          camera.start();
-        });
-
-        return { clothesList, currentCloth, selectCloth };
-      }
-    }).mount('#app');
-  </script>
-</body>
-</html>
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
-        await pose.send({image: videoElement});
-      },
-      width: 1280,
-      height: 720
-    });
-    camera.start();
-
-  </script>
 </body>
 </html>
