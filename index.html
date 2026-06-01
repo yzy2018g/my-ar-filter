@@ -99,7 +99,9 @@
         createApp({
             setup() {
                 // 狀態管理（已自動綁定你的 Space ID）
-                const spaceId = ref("MichaelYo/my-ar-cloth-api"); 
+                //const spaceId = ref("MichaelYo/my-ar-cloth-api"); 
+                const spaceId = ref("https://michaelyo-my-ar-cloth-api.hf.space");
+                
                 const aiStatus = ref("disconnect"); // disconnect, connecting, ready, error, processing
                 const aiMessage = ref("等待設定 Space ID");
                 const arStatus = ref("相機初始化中...");
