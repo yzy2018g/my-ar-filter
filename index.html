@@ -65,13 +65,14 @@
         aiStatus: '連線中',
         aiMessage: '等待初始化...',
         currentCloth: null,
+        // ⚠️ 請修改此處：填寫你 GitHub Pages 網頁的完整網址根路徑（記得結尾要有斜線 /）
+        githubBaseUrl: "https://yzy2018g.github.io/my-ar-filter/",
         clothesList: [
           { id: 1, styleName: "日系休閒", src: "style_1.png" },
           { id: 2, styleName: "韓系大衣", src: "style_2.png" }
         ]
       },
       mounted() {
-        // 預設直接觸發第一件衣服
         this.selectAndProcessCloth(this.clothesList[0]);
         this.initAR();
       },
@@ -79,29 +80,107 @@
         selectAndProcessCloth(cloth) {
           this.currentCloth = cloth;
           this.aiStatus = 'AI 運算中...';
-          this.aiMessage = `正在將 ${cloth.styleName} 轉為 Base64 數據流...`;
+          
+          // 💡 核心變革：直接組裝出這張圖片在網路上的「絕對直連網址」
+          const absoluteImgUrl = this.githubBaseUrl + cloth.src;
+          this.aiMessage = `正在將圖片網址傳送給 Hugging Face 下載...`;
           window.isImgLoaded = false;
 
-          // 1. 轉 Base64
-          this.getImgBase64FromUrl(cloth.src, (base64Data) => {
-            this.aiMessage = "Base64 轉換完成，正在向 Hugging Face 發送原生請求...";
-            
-            // 🚀 2. 完美的純原生通用傳輸格式
-            const hfApiUrl = "https://michaelyo-my-ar-cloth-api.hf.space/api/predict"; 
+          const hfApiUrl = "https://michaelyo-my-ar-cloth-api.hf.space/api/predict"; 
 
-            fetch(hfApiUrl, {
-              method: "POST",
-              headers: { 
-                "Content-Type": "application/json"
-              },
-              // 💡 Gradio 官方嚴格規定的標準 JSON 包裹格式：{"data": ["data:image/png;base64,..."]}
-              body: JSON.stringify({ data: [base64Data] })
-            })
-            .then(response => {
-              if (!response.ok) throw new Error('伺服器拒絕連線，狀態碼: ' + response.status);
-              return response.json();
-            })
-            .then(res => {
+          // 直接傳送網址字罩，徹底繞過所有前端 CORS 圖片破圖與污染封鎖
+          fetch(hfApiUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ data: [absoluteImgUrl] }) 
+          })
+          .then(response => {
+            if (!response.ok) throw new Error('伺服器拒絕，錯誤碼: ' + response.status);
+            return response.json();
+          })
+          .then(res => {
+            if (res && res.data && res.data[1]) {
+              window.clothImage.src = res.data[1]; 
+              window.clothParams = {
+                shoulderWidthPercent: res.data[2],
+                offsetFromTopPercent: res.data[3]
+              };
+              this.aiStatus = '就緒';
+              this.aiMessage = `AI 成功下載並解析圖片！肩膀佔比: ${(res.data[2]*100).toFixed(1)}%`;
+            } else {
+              this.aiStatus = '失敗';
+              this.aiMessage = '雲端回傳欄位不正確：' + JSON.stringify(res);
+            }
+          })
+          .catch(err => {
+            this.aiStatus = '錯誤';
+            this.aiMessage = '連線失敗，請確保後端為 Public 狀態。';
+            console.error("API Error:", err);
+          });
+        },
+        initAR() {
+          const videoElement = document.getElementById('input_video');
+          const canvasElement = document.getElementById('output_canvas');
+          const canvasCtx = canvasElement.getContext('2d');
+
+          function onResults(results) {
+            if (!results.poseLandmarks) return;
+
+            canvasElement.width = videoElement.videoWidth;
+            canvasElement.height = videoElement.videoHeight;
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (window.isImgLoaded && window.clothParams.shoulderWidthPercent) {
+              const lm = results.poseLandmarks;
+              const leftShoulder = lm[11];
+              const rightShoulder = lm[12];
+
+              const humanShoulderWidth = Math.sqrt(
+                Math.pow((leftShoulder.x - rightShoulder.x) * canvasElement.width, 2) +
+                Math.pow((leftShoulder.y - rightShoulder.y) * canvasElement.height, 2)
+              );
+
+              const clothWidth = humanShoulderWidth / window.clothParams.shoulderWidthPercent;
+              const clothHeight = clothWidth * (window.clothImage.height / window.clothImage.width);
+
+              const centerX = ((leftShoulder.x + rightShoulder.x) / 2) * canvasElement.width;
+              const humanCenterY = ((leftShoulder.y + rightShoulder.y) / 2) * canvasElement.height;
+              
+              const autoOffsetY = clothHeight * window.clothParams.offsetFromTopPercent;
+              const centerY = humanCenterY - (clothHeight * 0.12) + (autoOffsetY * 0.5);
+
+              canvasCtx.translate(centerX, centerY);
+              
+              const angle = Math.atan2(
+                (leftShoulder.y - rightShoulder.y) * canvasElement.height,
+                (leftShoulder.x - rightShoulder.x) * canvasElement.width
+              );
+              canvasCtx.rotate(angle);
+
+              canvasCtx.drawImage(window.clothImage, -clothWidth / 2, -clothHeight * 0.1, clothWidth, clothHeight);
+            }
+            canvasCtx.restore();
+          }
+
+          const pose = new Pose({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+          });
+          pose.setOptions({ modelComplexity: 0, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
+          pose.onResults(onResults);
+
+          const camera = new Camera(videoElement, {
+            onFrame: async () => { await pose.send({image: videoElement}); },
+            width: 1280, height: 720
+          });
+          camera.start();
+        }
+      }
+    });
+  </script>
+</body>
+</html>
               // 3. 檢查 Gradio 回傳的資料欄位
               if (res && res.data && res.data[1]) {
                 window.clothImage.src = res.data[1]; 
