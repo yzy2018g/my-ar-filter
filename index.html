@@ -3,9 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepFashion AR 動態試穿間 v4.5</title>
+    <title>DeepFashion AR 動態試穿間 v5.0</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/vue@3.3.4/dist/vue.global.prod.js"></script>
+    <script type="module">
+        import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm";
+        window.GradioClient = client;
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 </head>
@@ -21,9 +25,9 @@
             </div>
             <div class="bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl flex items-center gap-3">
                 <div class="flex flex-col">
-                    <span class="text-[10px] font-bold text-slate-500 uppercase">Gradio App URL</span>
-                    <input type="text" v-model="spaceUrl" @change="resetStatus"
-                           class="bg-transparent text-xs font-mono text-slate-200 focus:outline-none border-b border-transparent focus:border-indigo-500 pb-0.5 w-72">
+                    <span class="text-[10px] font-bold text-slate-500 uppercase">Hugging Face Space ID</span>
+                    <input type="text" v-model="spaceId" @change="initGradioClient"
+                           class="bg-transparent text-xs font-mono text-slate-200 focus:outline-none border-b border-transparent focus:border-indigo-500 pb-0.5 w-64">
                 </div>
                 <div class="flex items-center gap-1.5 border-l border-slate-800 pl-3">
                     <span :class="['h-2.5 w-2.5 rounded-full animate-pulse', statusColorClass]"></span>
@@ -75,8 +79,8 @@
                     <div v-if="isLoading" class="absolute inset-0 bg-slate-950/80 backdrop-blur-xs flex flex-col items-center justify-center">
                         <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-2xl flex flex-col items-center max-w-xs text-center">
                             <div class="animate-spin rounded-full h-8 w-8 border-2 border-indigo-500 border-t-transparent mb-3"></div>
-                            <h4 class="text-sm font-bold text-slate-200 mb-1">{{ loadingMainText }}</h4>
-                            <p class="text-xs text-slate-500">{{ loadingSubText }}</p>
+                            <h4 class="text-sm font-bold text-slate-200 mb-1">AI 去背運算中</h4>
+                            <p class="text-xs text-slate-500">{{ aiMessage }}</p>
                         </div>
                     </div>
                 </div>
@@ -94,14 +98,12 @@
 
         createApp({
             setup() {
-                const spaceUrl = ref("https://michaelyo-my-ar-cloth-api.hf.space"); 
-                const aiStatus = ref("ready"); 
-                const aiMessage = ref("動態 AR 模式已就緒");
+                // 🚀 關鍵修正 1：Gradio 6 官方 SDK 必須傳入標準 Space 名稱，不能用 https:// 網址
+                const spaceId = ref("MichaelYo/my-ar-cloth-api"); 
+                const aiStatus = ref("disconnect"); 
+                const aiMessage = ref("正在連線至雲端...");
                 const arStatus = ref("相機初始化中...");
                 const isLoading = ref(false);
-                
-                const loadingMainText = ref("AI 特徵計算中");
-                const loadingSubText = ref("正在傳送服飾網址至雲端進行去背與剪裁...");
                 
                 const clothesList = ref([]);
                 const currentClothUrl = ref("");
@@ -122,12 +124,29 @@
 
                 const aiStatusMessage = computed(() => aiMessage.value);
 
-                function resetStatus() {
-                    aiStatus.value = "ready";
-                    aiMessage.value = "已更新 API 端點設定";
+                // 🚀 關鍵修正 2：利用官方 SDK 的最新異步握手機制
+                let appClient = null;
+                async function initGradioClient() {
+                    if (!spaceId.value.trim()) return;
+                    try {
+                        aiStatus.value = "processing";
+                        aiMessage.value = "與 HF Space 握手中...";
+                        
+                        // 強制關閉憑證與認證要求，以純前端匿名身分連接 Gradio 6 引擎
+                        appClient = await window.GradioClient(spaceId.value.trim(), {
+                            with_credentials: false
+                        });
+                        
+                        aiStatus.value = "ready";
+                        aiMessage.value = "雲端 AI 已就緒";
+                    } catch (err) {
+                        console.error("Gradio 6 SDK 連線失敗:", err);
+                        aiStatus.value = "error";
+                        aiMessage.value = "連線失敗，請檢查 Space ID";
+                    }
                 }
 
-                // 1. 讀取衣櫥設定檔 clothes.json
+                // 讀取衣櫥設定檔 clothes.json
                 async function loadClothesConfig() {
                     try {
                         const res = await fetch('clothes.json');
@@ -137,82 +156,37 @@
                     }
                 }
 
-                // 2. 核心終極改版：相容 Gradio 5.x / 6.x 新版「兩階段異步任務路由」
+                // 🚀 關鍵修正 3：利用官方 SDK 的 .predict() 函式自動處理動態事件串流解析
                 async function selectCloth(item) {
+                    if (!appClient) {
+                        alert("AI 後端尚未就緒，請稍候或重新檢查 Space ID！");
+                        return;
+                    }
+
                     currentClothUrl.value = item.url;
                     isLoading.value = true;
                     window.isImgLoaded = false;
                     aiStatus.value = "processing";
-                    aiMessage.value = "建立 AI 處理任務...";
-                    
-                    loadingMainText.value = "正在連線雲端";
-                    loadingSubText.value = "發送請求至 Hugging Face 佇列系統...";
+                    aiMessage.value = "正在排隊剪裁...";
 
-                    let baseUrl = spaceUrl.value.trim().replace(/\/+$/, "");
-                    
                     try {
-                        // 🚀 第一階段：POST /call/predict 初始化任務並取得 event_id
-                        const response = await fetch(`${baseUrl}/call/predict`, {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ data: [ item.url ] })
-                        });
-
-                        if (!response.ok) throw new Error(`初始化失敗 (HTTP ${response.status})`);
-                        const callResult = await response.json();
-                        const eventId = callResult.event_id;
-
-                        if (!eventId) throw new Error("未能取得雲端任務 ID (event_id)");
-
-                        aiMessage.value = "AI 排隊剪裁中...";
-                        loadingMainText.value = "AI 去背剪裁中";
-                        loadingSubText.value = "正在排隊並進行膚色與頭部精準切除...";
-
-                        // 🚀 第二階段：高相容性輪詢機制（Polling），繞過瀏覽器對 SSE (EventSource) 的 CORS 跨網域阻擋
-                        let finalData = null;
-                        let attempts = 0;
-                        const maxAttempts = 30; // 最多等 30 秒
-
-                        while (!finalData && attempts < maxAttempts) {
-                            attempts++;
-                            
-                            const pollResponse = await fetch(`${baseUrl}/call/predict/==${eventId}`);
-                            if (!pollResponse.ok) throw new Error("向雲端索取結果時發生錯誤");
-                            
-                            const text = await pollResponse.text();
-                            
-                            // 檢查狀態流
-                            if (text.includes("data:")) {
-                                const lines = text.split("\n");
-                                for (let line of lines) {
-                                    if (line.startsWith("data:")) {
-                                        const jsonStr = line.replace("data:", "").trim();
-                                        // 忽略心跳包與無用狀態
-                                        if (jsonStr.includes("process_completed")) continue;
-                                        
-                                        try {
-                                            const parsed = JSON.parse(jsonStr);
-                                            // 只要解析出來是陣列，就代表拿到 [status, imgData, shoulder, offset]
-                                            if (Array.isArray(parsed)) {
-                                                finalData = parsed;
-                                                break;
-                                            }
-                                        } catch (e) {
-                                            // 忽略單純的狀態字串解析失敗
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            if (finalData) break;
-                            // 每 1 秒輪詢一次
-                            await new Promise(resolve => setTimeout(resolve, 1000));
+                        // 轉換成絕對網址（如果 clothes.json 裡用相對路徑）
+                        let absoluteClothUrl = item.url;
+                        if (!absoluteClothUrl.startsWith("http")) {
+                            absoluteClothUrl = window.location.href.substring(0, window.location.href.lastIndexOf('/')) + '/' + absoluteClothUrl;
                         }
 
-                        if (!finalData) throw new Error("雲端處理逾時，請再試一次");
+                        // 呼叫 Gradio 6 標準預測節點，SDK 會自動處理底層的 SSE 串流任務與 Token 封包
+                        const res = await appClient.predict("/predict", {
+                            input_data: absoluteClothUrl
+                        });
 
-                        // 解構後端 return 資料
-                        const [status, imgData, shoulder, offset] = finalData;
+                        // 檢查回傳資料結構
+                        if (!res || !res.data || res.data.length < 4) {
+                            throw new Error("雲端回傳資料結構不符預期");
+                        }
+
+                        const [status, imgData, shoulder, offset] = res.data;
 
                         if (status === "OK" && imgData && imgData.url) {
                             window.clothParams = {
@@ -220,14 +194,8 @@
                                 offsetFromTopPercent: parseFloat(offset)
                             };
 
-                            // 自動修正相對路徑圖片網址
-                            let fullImgUrl = imgData.url;
-                            if (fullImgUrl.startsWith("/")) {
-                                fullImgUrl = baseUrl + fullImgUrl;
-                            }
-
                             // 異步安全載入透明貼圖
-                            window.clothImage.src = fullImgUrl;
+                            window.clothImage.src = imgData.url;
                             window.clothImage.crossOrigin = "anonymous"; 
                             window.clothImage.onload = () => {
                                 window.isImgLoaded = true;
@@ -240,15 +208,15 @@
                         }
 
                     } catch (err) {
-                        console.error("試穿流程發生錯誤:", err);
-                        alert(`試穿失敗：${err.message}\n提示：若 Space 剛被喚醒可能較慢，請重試。`);
+                        console.error("SDK 請求錯誤:", err);
+                        alert(`試穿連線失敗：${err.message}\n請確認您的 Space 是否處於 Running 狀態。`);
                         isLoading.value = false;
                         aiStatus.value = "error";
                         aiMessage.value = "連線失敗";
                     }
                 }
 
-                // 3. 初始化 MediaPipe AR 動態對齊引擎
+                // 初始化 MediaPipe AR 動態對齊引擎
                 function initAREngine() {
                     const videoElement = document.getElementById('input_video');
                     const canvasElement = document.getElementById('output_canvas');
@@ -268,7 +236,7 @@
                         canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                         canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
 
-                        // 磁吸對齊演算法
+                        // 磁吸演算法
                         if (window.isImgLoaded && window.clothParams.shoulderWidthPercent > 0) {
                             const lm = results.poseLandmarks;
                             const leftShoulder = lm[11];  
@@ -323,27 +291,26 @@
                     });
 
                     camera.start()
-                        .then(() => { arStatus.value = "鏡鏡頭就緒"; })
+                        .then(() => { arStatus.value = "鏡頭就緒"; })
                         .catch(err => { arStatus.value = "鏡頭啟動失敗: " + err; });
                 }
 
                 onMounted(async () => {
                     await loadClothesConfig();
+                    await initGradioClient(); // 優先完成 SDK 握手
                     initAREngine();
                 });
 
                 return {
-                    spaceUrl,
+                    spaceId,
                     aiStatusMessage,
                     statusColorClass,
                     arStatus,
                     isLoading,
-                    loadingMainText,
-                    loadingSubText,
                     clothesList,
                     currentClothUrl,
                     clothParams: window.clothParams,
-                    resetStatus,
+                    initGradioClient,
                     selectCloth
                 };
             }
