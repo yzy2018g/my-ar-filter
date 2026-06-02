@@ -1,88 +1,140 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-<meta charset="UTF-8">
-<title>HF API 測試（不卡 UI 版）</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HF API 測試穩定版</title>
+
+    <script type="module">
+        import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm";
+        window.GradioClient = client;
+    </script>
+
+    <style>
+        body {
+            font-family: Arial;
+            background: #0f172a;
+            color: white;
+            padding: 20px;
+        }
+
+        button {
+            padding: 10px 16px;
+            margin-top: 10px;
+            cursor: pointer;
+        }
+
+        .box {
+            padding: 12px;
+            background: #1e293b;
+            margin-top: 10px;
+            border-radius: 8px;
+        }
+
+        .loading {
+            color: #38bdf8;
+        }
+
+        .error {
+            color: #fb7185;
+        }
+
+        .ok {
+            color: #4ade80;
+        }
+    </style>
 </head>
 
-<body style="background:#0b0f1a;color:#fff;font-family:Arial;padding:20px">
+<body>
 
-<h2>HF API 測試</h2>
+<h2>HF API 測試（不卡死版本）</h2>
 
-<input id="url" style="width:100%;padding:8px"
-value="https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png">
+<input id="url" style="width:100%" value="https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png">
 
-<br><br>
+<br>
 
-<button onclick="runTest()">測試 API</button>
-<button onclick="reset()">重置</button>
+<button onclick="run()">測試 API</button>
 
-<p id="status">狀態：尚未開始</p>
-<p id="step">進度：-</p>
+<div class="box" id="status">狀態：尚未開始</div>
+<div class="box" id="result"></div>
 
-<pre id="log" style="background:#111;padding:10px;overflow:auto"></pre>
+<script>
 
-<img id="img" style="max-width:300px;margin-top:10px"/>
+let client = null;
 
-<script type="module">
-import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm";
+// 🔥 timeout 工具（60秒）
+function timeout(ms) {
+    return new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("TIMEOUT " + ms / 1000 + "s")), ms)
+    );
+}
 
-let app = null;
-let controller = null;
+// 初始化 HF
+async function init() {
+    try {
+        client = await window.GradioClient("MichaelYo/my-ar-cloth-api");
+        document.getElementById("status").innerHTML = "狀態：Space 已連線";
+    } catch (e) {
+        document.getElementById("status").innerHTML = "狀態：連線失敗";
+    }
+}
 
-window.runTest = async function () {
+init();
+
+async function run() {
     const url = document.getElementById("url").value;
 
-    document.getElementById("status").innerText = "狀態：連線中...";
-    document.getElementById("step").innerText = "進度：初始化";
+    const status = document.getElementById("status");
+    const result = document.getElementById("result");
+
+    status.innerHTML = "狀態：開始 predict...";
+    result.innerHTML = "";
+
+    if (!client) {
+        status.innerHTML = "狀態：尚未連線";
+        return;
+    }
+
+    const request = async () => {
+        return await client.predict("/predict", [url]);
+    };
 
     try {
-        // 建立 client
-        if (!app) {
-            app = await client("MichaelYo/my-ar-cloth-api");
+        let res;
+
+        try {
+            res = await Promise.race([
+                request(),
+                timeout(60000) // 🔥 60秒
+            ]);
+        } catch (e) {
+            status.innerHTML = "第一次較慢，正在重試...";
+            res = await Promise.race([
+                request(),
+                timeout(60000)
+            ]);
         }
 
-        document.getElementById("status").innerText = "狀態：Space 已連線";
+        console.log(res);
 
-        // 每次點擊都切斷上一個 request
-        if (controller) controller.abort();
-        controller = new AbortController();
-
-        document.getElementById("step").innerText = "開始 predict...";
-
-        const timeout = new Promise((_, reject) => {
-            setTimeout(() => {
-                controller.abort();
-                reject(new Error("TIMEOUT 10s"));
-            }, 10000);
-        });
-
-        const req = app.predict("/predict", [url]);
-
-        const result = await Promise.race([req, timeout]);
-
-        document.getElementById("log").innerText =
-            JSON.stringify(result, null, 2);
-
-        document.getElementById("status").innerText = "成功";
-
-        if (result?.data?.[1]?.url) {
-            document.getElementById("img").src = result.data[1].url;
+        if (!res || !res.data) {
+            throw new Error("無資料回傳");
         }
 
-    } catch (e) {
-        document.getElementById("status").innerText = "error";
-        document.getElementById("step").innerText = "失敗：" + e.message;
-        document.getElementById("log").innerText = String(e);
+        status.innerHTML = "狀態：OK";
+
+        result.innerHTML = `
+            <div class="ok">成功</div>
+            <pre>${JSON.stringify(res.data, null, 2)}</pre>
+        `;
+
+    } catch (err) {
+        console.error(err);
+        status.innerHTML = "狀態：error";
+        result.innerHTML = `<div class="error">${err.message}</div>`;
     }
-};
+}
 
-window.reset = function () {
-    document.getElementById("status").innerText = "狀態：reset";
-    document.getElementById("step").innerText = "-";
-    document.getElementById("log").innerText = "";
-    document.getElementById("img").src = "";
-};
 </script>
 
 </body>
