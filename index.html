@@ -62,43 +62,62 @@
         }
 
         // 2. 選擇衣服並送去 Hugging Face 去背
-        async function selectCloth(imgSrc, element) {
-            // 切換 UI 高亮
-            document.querySelectorAll('.preview-box img').forEach(img => img.classList.remove('active'));
-            element.classList.add('active');
+async function selectCloth(imgSrc, element) {
+    // 切換 UI 高亮
+    document.querySelectorAll('.preview-box img').forEach(img => img.classList.remove('active'));
+    element.classList.add('active');
 
-            loadingStatus.style.display = "block";
-            isClothLoaded = false;
+    loadingStatus.style.display = "block";
+    loadingStatus.textContent = "後端 AI 去背處理中...請稍候...";
+    isClothLoaded = false;
 
-            try {
-                // 將本地圖片轉為 Blob 送出
-                const response = await fetch(imgSrc);
-                const blob = await response.blob();
+    try {
+        // 將本地圖片轉為 Blob 送出
+        const response = await fetch(imgSrc);
+        const blob = await response.blob();
 
-                // 呼叫 Hugging Face Space 的 Gradio API
-                const formData = new FormData();
-                formData.append("data", blob); // Gradio 的 /predict 接收 data 欄位
+        const formData = new FormData();
+        formData.append("data", blob); 
 
-                const apiResponse = await fetch(HF_API_URL, {
-                    method: "POST",
-                    body: formData
-                });
+        const apiResponse = await fetch(HF_API_URL, {
+            method: "POST",
+            body: formData
+        });
 
-                const result = await apiResponse.json();
-                
-                // Gradio 回傳的資料結構通常在 result.data[0] (Base64 或 圖片網址)
-                if (result.data && result.data[0]) {
-                    currentClothingImage.src = result.data[0]; // 設定給 Image 物件
-                    currentClothingImage.onload = () => {
-                        isClothLoaded = true;
-                        loadingStatus.style.display = "none";
-                    };
-                }
-            } catch (error) {
-                console.error("呼叫 HF API 失敗:", error);
-                loadingStatus.textContent = "AI 處理失敗，請重試。";
-            }
+        if (!apiResponse.ok) {
+            throw new Error(`HTTP 錯誤！狀態碼: ${apiResponse.status}`);
         }
+
+        const result = await apiResponse.json();
+        console.log("HF 回傳原始資料:", result); // 可以在瀏覽器 F12 觀察結構
+        
+        // 針對 Gradio 6.x 的新結構進行相容性解析
+        if (result.data && result.data[0]) {
+            const dataObj = result.data[0];
+            
+            // 如果回傳的是物件且包含 url (Gradio 新版標準)
+            if (dataObj && typeof dataObj === 'object' && dataObj.url) {
+                currentClothingImage.src = dataObj.url;
+            } 
+            // 如果回傳的是純字串/Base64 (Gradio 舊版)
+            else if (typeof dataObj === 'string') {
+                currentClothingImage.src = dataObj;
+            } else {
+                throw new Error("無法辨識的回傳資料格式");
+            }
+
+            currentClothingImage.onload = () => {
+                isClothLoaded = true;
+                loadingStatus.style.display = "none";
+            };
+        } else {
+            throw new Error("回傳的 data 欄位為空");
+        }
+    } catch (error) {
+        console.error("詳細錯誤訊息:", error);
+        loadingStatus.textContent = "AI 處理失敗：" + error.message;
+    }
+}
 
         // 3. AR 即時渲染迴圈
         function renderLoop() {
