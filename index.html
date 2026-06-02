@@ -2,80 +2,63 @@
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
-<title>HF API 測試器</title>
-<style>
-body {
-    font-family: Arial;
-    background: #0f172a;
-    color: white;
-    padding: 20px;
-}
-input, button {
-    padding: 10px;
-    margin: 5px;
-}
-pre {
-    background: #111827;
-    padding: 10px;
-    border-radius: 8px;
-    overflow-x: auto;
-}
-button {
-    cursor: pointer;
-}
-</style>
+<title>AR API 測試 (Render版)</title>
 </head>
 
-<body>
+<body style="background:#0f172a;color:white;font-family:Arial;padding:20px">
 
-<h2>HF API 測試</h2>
+<h2>HF → Render API 測試</h2>
 
-<input id="space" style="width:400px"
-       value="MichaelYo/my-ar-cloth-api" />
+<input id="api" style="width:500px"
+value="https://your-service.onrender.com"><br><br>
 
-<br>
+<input id="img" style="width:700px"
+value="https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png"><br><br>
 
-<input id="img" style="width:600px"
-value="https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png"/>
+<button onclick="test()">測試 API</button>
 
-<br>
+<p id="status">狀態：待命</p>
 
-<button onclick="testAPI()">測試 API</button>
+<pre id="out"></pre>
 
-<p id="status">狀態：尚未測試</p>
+<script>
+async function test() {
 
-<pre id="result"></pre>
-
-<script type="module">
-import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm";
-
-window.testAPI = async function () {
-
-    const spaceId = document.getElementById("space").value;
+    const api = document.getElementById("api").value;
     const img = document.getElementById("img").value;
 
     const status = document.getElementById("status");
-    const result = document.getElementById("result");
+    const out = document.getElementById("out");
 
-    status.innerText = "連線中...";
-    result.innerText = "";
+    status.innerText = "請求中...";
+    out.innerText = "";
+
+    const start = performance.now();
 
     try {
-        const app = await client(spaceId);
+        const res = await fetch(api + "/predict", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                url: img
+            })
+        });
 
-        status.innerText = "已連線，開始 predict...";
+        const data = await res.json();
 
-        const r = await app.predict("/predict", [img]);
+        const end = performance.now();
 
-        status.innerText = "完成";
+        status.innerText = `完成 ${(end - start).toFixed(0)}ms`;
 
-        result.innerText = JSON.stringify(r, null, 2);
+        out.innerText = JSON.stringify(data, null, 2);
 
     } catch (e) {
         status.innerText = "失敗";
-        result.innerText = e.toString();
+        out.innerText = e.toString();
     }
-};
+}
 </script>
 
 </body>
