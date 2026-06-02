@@ -1,140 +1,81 @@
 <!DOCTYPE html>
 <html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HF API 測試穩定版</title>
-
-    <script type="module">
-        import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm";
-        window.GradioClient = client;
-    </script>
-
-    <style>
-        body {
-            font-family: Arial;
-            background: #0f172a;
-            color: white;
-            padding: 20px;
-        }
-
-        button {
-            padding: 10px 16px;
-            margin-top: 10px;
-            cursor: pointer;
-        }
-
-        .box {
-            padding: 12px;
-            background: #1e293b;
-            margin-top: 10px;
-            border-radius: 8px;
-        }
-
-        .loading {
-            color: #38bdf8;
-        }
-
-        .error {
-            color: #fb7185;
-        }
-
-        .ok {
-            color: #4ade80;
-        }
-    </style>
+<meta charset="UTF-8">
+<title>HF API 測試器</title>
+<style>
+body {
+    font-family: Arial;
+    background: #0f172a;
+    color: white;
+    padding: 20px;
+}
+input, button {
+    padding: 10px;
+    margin: 5px;
+}
+pre {
+    background: #111827;
+    padding: 10px;
+    border-radius: 8px;
+    overflow-x: auto;
+}
+button {
+    cursor: pointer;
+}
+</style>
 </head>
 
 <body>
 
-<h2>HF API 測試（不卡死版本）</h2>
+<h2>HF API 測試</h2>
 
-<input id="url" style="width:100%" value="https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png">
+<input id="space" style="width:400px"
+       value="MichaelYo/my-ar-cloth-api" />
 
 <br>
 
-<button onclick="run()">測試 API</button>
+<input id="img" style="width:600px"
+value="https://raw.githubusercontent.com/yzy2018g/my-ar-filter/deepfashion-style/style_1.png"/>
 
-<div class="box" id="status">狀態：尚未開始</div>
-<div class="box" id="result"></div>
+<br>
 
-<script>
+<button onclick="testAPI()">測試 API</button>
 
-let client = null;
+<p id="status">狀態：尚未測試</p>
 
-// 🔥 timeout 工具（60秒）
-function timeout(ms) {
-    return new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("TIMEOUT " + ms / 1000 + "s")), ms)
-    );
-}
+<pre id="result"></pre>
 
-// 初始化 HF
-async function init() {
-    try {
-        client = await window.GradioClient("MichaelYo/my-ar-cloth-api");
-        document.getElementById("status").innerHTML = "狀態：Space 已連線";
-    } catch (e) {
-        document.getElementById("status").innerHTML = "狀態：連線失敗";
-    }
-}
+<script type="module">
+import { client } from "https://cdn.jsdelivr.net/npm/@gradio/client@1.10.0/+esm";
 
-init();
+window.testAPI = async function () {
 
-async function run() {
-    const url = document.getElementById("url").value;
+    const spaceId = document.getElementById("space").value;
+    const img = document.getElementById("img").value;
 
     const status = document.getElementById("status");
     const result = document.getElementById("result");
 
-    status.innerHTML = "狀態：開始 predict...";
-    result.innerHTML = "";
-
-    if (!client) {
-        status.innerHTML = "狀態：尚未連線";
-        return;
-    }
-
-    const request = async () => {
-        return await client.predict("/predict", [url]);
-    };
+    status.innerText = "連線中...";
+    result.innerText = "";
 
     try {
-        let res;
+        const app = await client(spaceId);
 
-        try {
-            res = await Promise.race([
-                request(),
-                timeout(60000) // 🔥 60秒
-            ]);
-        } catch (e) {
-            status.innerHTML = "第一次較慢，正在重試...";
-            res = await Promise.race([
-                request(),
-                timeout(60000)
-            ]);
-        }
+        status.innerText = "已連線，開始 predict...";
 
-        console.log(res);
+        const r = await app.predict("/predict", [img]);
 
-        if (!res || !res.data) {
-            throw new Error("無資料回傳");
-        }
+        status.innerText = "完成";
 
-        status.innerHTML = "狀態：OK";
+        result.innerText = JSON.stringify(r, null, 2);
 
-        result.innerHTML = `
-            <div class="ok">成功</div>
-            <pre>${JSON.stringify(res.data, null, 2)}</pre>
-        `;
-
-    } catch (err) {
-        console.error(err);
-        status.innerHTML = "狀態：error";
-        result.innerHTML = `<div class="error">${err.message}</div>`;
+    } catch (e) {
+        status.innerText = "失敗";
+        result.innerText = e.toString();
     }
-}
-
+};
 </script>
 
 </body>
