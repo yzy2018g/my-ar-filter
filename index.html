@@ -15,6 +15,7 @@
         canvas { z-index: 10; pointer-events: none; } /* 讓 Canvas 疊在 Video 上 */
         .loading { display: none; color: #00ffcc; font-weight: bold; }
     </style>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@gradio/client@1/dist/index.min.js"></script>
 </head>
 <body>
 
@@ -72,52 +73,42 @@ async function selectCloth(imgSrc, element) {
     isClothLoaded = false;
 
     try {
-        // 將本地圖片轉為 Blob 送出
+        // 轉成本地 Blob
         const response = await fetch(imgSrc);
         const blob = await response.blob();
 
-        const formData = new FormData();
-        formData.append("data", blob); 
+        // 1. 連接到你的 Hugging Face Space (直接填你的 Space ID: 帳號/名稱)
+        // 這樣做會自動走官方的 WebSocket/API 管道，100% 避開 403 錯誤
+        const { client } = await window.gradioConnect("michaelyo/my-ar-cloth-api");
 
-        const apiResponse = await fetch(HF_API_URL, {
-            method: "POST",
-            body: formData
+        // 2. 呼叫 /predict 終端
+        const result = await client.predict("/predict", { 
+            input_image: blob 
         });
 
-        if (!apiResponse.ok) {
-            throw new Error(`HTTP 錯誤！狀態碼: ${apiResponse.status}`);
-        }
+        console.log("Gradio Client 回傳結果:", result);
 
-        const result = await apiResponse.json();
-        console.log("HF 回傳原始資料:", result); // 可以在瀏覽器 F12 觀察結構
-        
-        // 針對 Gradio 6.x 的新結構進行相容性解析
+        // 3. 取得去背後的圖片網址
         if (result.data && result.data[0]) {
             const dataObj = result.data[0];
-            
-            // 如果回傳的是物件且包含 url (Gradio 新版標準)
+
             if (dataObj && typeof dataObj === 'object' && dataObj.url) {
                 currentClothingImage.src = dataObj.url;
-            } 
-            // 如果回傳的是純字串/Base64 (Gradio 舊版)
-            else if (typeof dataObj === 'string') {
+            } else if (typeof dataObj === 'string') {
                 currentClothingImage.src = dataObj;
-            } else {
-                throw new Error("無法辨識的回傳資料格式");
             }
 
             currentClothingImage.onload = () => {
                 isClothLoaded = true;
                 loadingStatus.style.display = "none";
             };
-        } else {
-            throw new Error("回傳的 data 欄位為空");
         }
     } catch (error) {
         console.error("詳細錯誤訊息:", error);
         loadingStatus.textContent = "AI 處理失敗：" + error.message;
     }
 }
+
 
         // 3. AR 即時渲染迴圈
         function renderLoop() {
