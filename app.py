@@ -1,13 +1,23 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from rembg import remove
-from PIL import Image
 import requests
+from PIL import Image
 from io import BytesIO
+from rembg import remove
 import numpy as np
 import cv2
 
 app = FastAPI()
+
+# ✅ 解決 CORS（你 HTML fetch 失敗主因之一）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 class Req(BaseModel):
     url: str
@@ -21,51 +31,37 @@ def load_image(url):
 
 @app.get("/")
 def home():
-    return {"status": "ok", "msg": "AR API running"}
-
+    return {"status": "ok", "msg": "API running"}
 
 @app.post("/predict")
 def predict(req: Req):
+    img = load_image(req.url)
 
-    try:
-        img = load_image(req.url)
+    # remove bg
+    out = remove(img)
 
-        # remove bg
-        out = remove(img)
+    if isinstance(out, np.ndarray):
+        out = Image.fromarray(out)
 
-        if not isinstance(out, Image.Image):
-            out = Image.fromarray(out)
+    out = out.convert("RGBA")
 
-        out = out.convert("RGBA")
+    # simple metrics
+    arr = np.array(out)
+    alpha = arr[:, :, 3]
 
-        arr = np.array(out)
-        alpha = arr[:, :, 3]
+    ys, xs = np.where(alpha > 0)
 
-        ys, xs = np.where(alpha > 0)
-
-        if len(ys) == 0:
-            return {"status": "error"}
-
-        top = np.min(ys)
-        bottom = np.max(ys)
-        h = bottom - top
-
-        shoulder_y = int(top + h * 0.1)
-
-        row = alpha[shoulder_y]
-        xs_row = np.where(row > 0)[0]
-
-        left = np.min(xs_row) if len(xs_row) else np.min(xs)
-        right = np.max(xs_row) if len(xs_row) else np.max(xs)
-
-        shoulder_ratio = (right - left) / arr.shape[1]
-        offset_ratio = shoulder_y / arr.shape[0]
-
+    if len(xs) == 0:
         return {
-            "status": "OK",
-            "shoulder": float(shoulder_ratio),
-            "offset": float(offset_ratio),
+            "status": "error",
+            "msg": "empty mask"
         }
 
-    except Exception as e:
-        return {"status": "error", "msg": str(e)}
+    shoulder_ratio = (np.max(xs) - np.min(xs)) / arr.shape[1]
+    offset_ratio = np.min(ys) / arr.shape[0]
+
+    return {
+        "status": "OK",
+        "shoulder_ratio": float(shoulder_ratio),
+        "offset_ratio": float(offset_ratio)
+    }
